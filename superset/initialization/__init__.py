@@ -268,6 +268,12 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         appbuilder.add_api(SqlLabRestApi)
         appbuilder.add_api(SqlLabPermalinkRestApi)
         appbuilder.add_api(LogRestApi)
+
+        # Conditionally register AI Agent API
+        if feature_flag_manager.is_feature_enabled("AI_AGENT"):
+            from superset.ai.api import AiAgentRestApi
+
+            appbuilder.add_api(AiAgentRestApi)
         #
         # Setup regular views
         #

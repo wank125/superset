@@ -1,0 +1,114 @@
+# Minimal Superset compose for AI Agent testing (Docker Compose v2.6 compatible)
+version: "3.8"
+
+x-superset-volumes: &superset-volumes
+  - ./docker:/app/docker
+  - ./superset:/app/superset
+  - ./superset-frontend:/app/superset-frontend
+  - superset_home:/app/superset_home
+  - ./tests:/app/tests
+
+x-common-build: &common-build
+  context: .
+  target: dev
+  cache_from:
+    - apache/superset-cache:3.10-slim-bookworm
+  args:
+    DEV_MODE: "true"
+    INCLUDE_CHROMIUM: "false"
+    INCLUDE_FIREFOX: "false"
+    BUILD_TRANSLATIONS: "false"
+
+services:
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis:/data
+
+  db:
+    image: postgres:16
+    env_file: docker/.env
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_home:/var/lib/postgresql/data
+      - ./docker/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+
+  superset-init:
+    build: *common-build
+    command: ["/app/docker/docker-init.sh"]
+    env_file: docker/.env
+    depends_on:
+      - db
+      - redis
+    user: root
+    volumes: *superset-volumes
+
+  superset:
+    build: *common-build
+    command: ["/app/docker/docker-bootstrap.sh", "app"]
+    env_file: docker/.env
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    user: root
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    volumes: *superset-volumes
+
+  superset-worker:
+    build: *common-build
+    command: ["/app/docker/docker-bootstrap.sh", "worker"]
+    env_file: docker/.env
+    environment:
+      CELERYD_CONCURRENCY: 2
+    restart: unless-stopped
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    user: root
+    volumes: *superset-volumes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  superset-worker-beat:
+    build: *common-build
+    command: ["/app/docker/docker-bootstrap.sh", "beat"]
+    env_file: docker/.env
+    restart: unless-stopped
+    depends_on:
+      - superset-worker
+    user: root
+    volumes: *superset-volumes
+
+  superset-node:
+    build:
+      context: .
+      target: superset-node
+      args:
+        DEV_MODE: "true"
+        BUILD_TRANSLATIONS: "false"
+    environment:
+      BUILD_SUPERSET_FRONTEND_IN_DOCKER: "true"
+      NPM_RUN_PRUNE: "false"
+      superset: "http://superset:8088"
+    ports:
+      - "9000:9000"
+    command: ["/app/docker/docker-frontend.sh"]
+    env_file: docker/.env
+    volumes: *superset-volumes
+
+volumes:
+  superset_home:
+    external: false
+  db_home:
+    external: false
+  redis:
+    external: false

@@ -502,6 +502,9 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     "DRUID_JOINS": False,
     "DYNAMIC_PLUGINS": False,
     "ENABLE_TEMPLATE_PROCESSING": False,
+    # AI Agent feature flags (all disabled by default)
+    "AI_AGENT": False,
+    "AI_AGENT_NL2SQL": False,
     # Allow for javascript controls components
     # this enables programmers to customize certain charts (like the
     # geospatial ones) by inputting javascript in controls. This exposes
@@ -641,6 +644,37 @@ SSH_TUNNEL_LOCAL_BIND_ADDRESS = "127.0.0.1"
 SSH_TUNNEL_TIMEOUT_SEC = 10.0
 #: Timeout (seconds) for transport socket (``socket.settimeout``)
 SSH_TUNNEL_PACKET_TIMEOUT_SEC = 1.0
+
+# ----------------------------------------------------------------------
+# AI Agent Configuration
+# ----------------------------------------------------------------------
+AI_LLM_DEFAULT_PROVIDER = "openai"
+AI_LLM_PROVIDERS: dict[str, dict] = {
+    "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "model": "gpt-4o",
+        "temperature": 0.0,
+        "max_tokens": 4096,
+        "base_url": None,
+    },
+    "anthropic": {
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "model": "claude-sonnet-4-20250514",
+        "temperature": 0.0,
+        "max_tokens": 4096,
+    },
+    "ollama": {
+        "base_url": "http://localhost:11434",
+        "model": "llama3",
+        "temperature": 0.0,
+        "max_tokens": 4096,
+    },
+}
+AI_AGENT_MAX_TURNS = 10
+AI_AGENT_TIMEOUT = 60
+AI_AGENT_MAX_CONTEXT_ROUNDS = 20
+AI_AGENT_MAX_TOKENS_PER_SESSION = 100000
+AI_AGENT_STREAM_CHANNEL_PREFIX = "ai-agent-"
 
 
 # Feature flags may also be set via 'SUPERSET_FEATURE_' prefixed environment vars.
