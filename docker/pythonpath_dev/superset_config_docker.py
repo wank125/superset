@@ -35,17 +35,17 @@ FEATURE_FLAGS = {
 }
 
 # ---------------------------------------------------------------------------
-# AI LLM Configuration — ZhiPu (GLM-4) via OpenAI-compatible API
+# AI LLM Configuration — Local LM Studio (GLM-4.7-Flash)
 # ---------------------------------------------------------------------------
 AI_LLM_DEFAULT_PROVIDER = "openai"
 
 AI_LLM_PROVIDERS = {
     "openai": {
-        "api_key_env": "ZHIPU_API_KEY",
-        "model": "glm-4-flash",
+        "api_key_env": "LM_STUDIO_API_KEY",
+        "model": "zai-org/glm-4.7-flash",
         "temperature": 0.0,
         "max_tokens": 4096,
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "base_url": "http://host.docker.internal:1234/v1",
     },
 }
 

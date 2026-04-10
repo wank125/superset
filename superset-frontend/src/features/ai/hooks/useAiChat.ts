@@ -35,6 +35,10 @@ export function useAiChat(databaseId: number) {
   const [streamingText, setStreamingText] = useState('');
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionIdRef = useRef<string>(createSessionId());
+  // Ref to track accumulated streaming text without relying on setState updater
+  // to avoid React 18 Strict Mode double-invocation of updater functions
+  // causing duplicate messages when setMessages is nested inside setStreamingText.
+  const streamingTextRef = useRef('');
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -46,15 +50,15 @@ export function useAiChat(databaseId: number) {
   const pollEvents = useCallback(
     (channelId: string, lastId: string, attempt: number) => {
       if (attempt >= MAX_POLL_ATTEMPTS) {
-        setStreamingText(prev => {
-          if (prev) {
-            setMessages(msgs => [
-              ...msgs,
-              { role: 'assistant' as const, content: prev, timestamp: Date.now() },
-            ]);
-          }
-          return '';
-        });
+        const accumulated = streamingTextRef.current;
+        if (accumulated) {
+          setMessages(msgs => [
+            ...msgs,
+            { role: 'assistant' as const, content: accumulated, timestamp: Date.now() },
+          ]);
+        }
+        streamingTextRef.current = '';
+        setStreamingText('');
         setLoading(false);
         return;
       }
@@ -67,15 +71,15 @@ export function useAiChat(databaseId: number) {
               newChunkText += event.data.content as string;
             }
             if (event.type === 'error') {
-              setStreamingText(prev => {
-                if (prev) {
-                  setMessages(msgs => [
-                    ...msgs,
-                    { role: 'assistant' as const, content: prev, timestamp: Date.now() },
-                  ]);
-                }
-                return '';
-              });
+              const accumulated = streamingTextRef.current;
+              if (accumulated) {
+                setMessages(msgs => [
+                  ...msgs,
+                  { role: 'assistant' as const, content: accumulated, timestamp: Date.now() },
+                ]);
+              }
+              streamingTextRef.current = '';
+              setStreamingText('');
               setMessages(prev => [
                 ...prev,
                 {
@@ -89,16 +93,15 @@ export function useAiChat(databaseId: number) {
               return;
             }
             if (event.type === 'done') {
-              setStreamingText(prev => {
-                const fullText = prev + newChunkText;
-                if (fullText) {
-                  setMessages(msgs => [
-                    ...msgs,
-                    { role: 'assistant' as const, content: fullText, timestamp: Date.now() },
-                  ]);
-                }
-                return '';
-              });
+              const fullText = streamingTextRef.current + newChunkText;
+              if (fullText) {
+                setMessages(msgs => [
+                  ...msgs,
+                  { role: 'assistant' as const, content: fullText, timestamp: Date.now() },
+                ]);
+              }
+              streamingTextRef.current = '';
+              setStreamingText('');
               setLoading(false);
               stopPolling();
               return;
@@ -107,7 +110,8 @@ export function useAiChat(databaseId: number) {
 
           // No done event yet — accumulate chunk text for next poll
           if (newChunkText) {
-            setStreamingText(prev => prev + newChunkText);
+            streamingTextRef.current += newChunkText;
+            setStreamingText(streamingTextRef.current);
           }
 
           // Continue polling
@@ -137,6 +141,7 @@ export function useAiChat(databaseId: number) {
         { role: 'user', content: message, timestamp: Date.now() },
       ]);
       setLoading(true);
+      streamingTextRef.current = '';
       setStreamingText('');
 
       try {
@@ -163,6 +168,7 @@ export function useAiChat(databaseId: number) {
 
   const clearMessages = useCallback(() => {
     setMessages([]);
+    streamingTextRef.current = '';
     setStreamingText('');
     stopPolling();
     // Reset session for a fresh conversation

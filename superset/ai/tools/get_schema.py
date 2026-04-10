@@ -55,11 +55,14 @@ class GetSchemaTool(BaseTool):
         "required": [],
     }
 
-    def __init__(self, database_id: int) -> None:
+    def __init__(
+        self, database_id: int, default_schema: str | None = None
+    ) -> None:
         self._database_id = database_id
+        self._default_schema = default_schema
 
     def run(self, arguments: dict[str, Any]) -> str:
-        schema_name = arguments.get("schema_name")
+        schema_name = arguments.get("schema_name") or self._default_schema
         table_name = arguments.get("table_name")
         database = DatabaseDAO.find_by_id(self._database_id)
         if database is None:
@@ -90,18 +93,35 @@ class GetSchemaTool(BaseTool):
         if schema_name is None:
             with database.get_inspector(catalog=catalog) as inspector:
                 schemas = inspector.get_schema_names() if hasattr(inspector, "get_schema_names") else [None]
-            schema_name = schemas[0] if schemas else None
+            # Prefer 'public' over system schemas (information_schema, pg_catalog, etc.)
+            if schemas:
+                schema_name = next(
+                    (s for s in schemas if s == "public"),
+                    schemas[0],
+                )
+            else:
+                schema_name = None
 
         # Get table names
+        try:
+            with database.get_inspector(catalog=catalog, schema=schema_name) as inspector:
+                all_table_names = list(inspector.get_table_names(schema=schema_name))
+        except Exception:
+            with database.get_inspector(catalog=catalog, schema=schema_name) as inspector:
+                all_table_names = list(inspector.get_table_names(schema=schema_name))
+
         if table_name:
-            table_names = [table_name]
+            # Check if specified table exists (case-insensitive)
+            matched = [t for t in all_table_names if t.lower() == table_name.lower()]
+            if not matched:
+                available = ", ".join(sorted(all_table_names)[:30])
+                return (
+                    f"Table '{table_name}' not found in schema '{schema_name}'. "
+                    f"Available tables: {available}"
+                )
+            table_names = matched
         else:
-            try:
-                with database.get_inspector(catalog=catalog, schema=schema_name) as inspector:
-                    table_names = list(inspector.get_table_names(schema=schema_name))
-            except Exception:
-                with database.get_inspector(catalog=catalog, schema=schema_name) as inspector:
-                    table_names = list(inspector.get_table_names(schema=schema_name))
+            table_names = all_table_names
 
         if not table_names:
             return f"No tables found in schema '{schema_name}'."

@@ -112,8 +112,10 @@ class AiStreamManager:
 
 def _increment_id(event_id: str) -> str:
     """Increment a Redis stream ID to read the next event after it."""
+    if event_id == "0":
+        return "-"
     try:
         ts, seq = event_id.split("-")
         return f"{ts}-{int(seq) + 1}"
     except (ValueError, AttributeError):
-        return event_id
+        return "-"

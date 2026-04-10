@@ -22,7 +22,9 @@ import logging
 from typing import Any
 
 from flask import request
-from flask_appbuilder.api import BaseApi, expose, protect, rison, safe
+from flask_appbuilder.api import expose, protect, rison, safe
+
+from superset.views.base_api import BaseSupersetApi
 
 from superset.ai.schemas import AiChatPostSchema, AiEventsGetSchema
 from superset.ai.streaming.manager import AiStreamManager
@@ -35,19 +37,15 @@ _chat_schema = AiChatPostSchema()
 _events_schema = AiEventsGetSchema()
 
 
-class AiAgentRestApi(BaseApi):
+class AiAgentRestApi(BaseSupersetApi):
     """API endpoints for AI Agent chat and event streaming."""
 
     resource_name = "ai"
     class_permission_name = "AI Agent"
-    method_permission_name = {
-        "get": "read",
-        "post": "write",
-    }
     openapi_spec_tag = "AI Agent"
 
     @expose("/chat/", methods=["POST"])
-    @protect()
+    @protect(allow_browser_login=True)
     @safe
     def chat(self) -> Any:
         """Start an AI agent conversation.
@@ -117,7 +115,7 @@ class AiAgentRestApi(BaseApi):
         return self.response(200, channel_id=channel_id)
 
     @expose("/events/", methods=["GET"])
-    @protect()
+    @protect(allow_browser_login=True)
     @safe
     def events(self) -> Any:
         """Poll for AI agent events.

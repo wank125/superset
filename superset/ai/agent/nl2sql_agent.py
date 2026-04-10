@@ -40,7 +40,7 @@ class NL2SQLAgent(BaseAgent):
         schema_name: str | None = None,
     ) -> None:
         tools: list[BaseTool] = [
-            GetSchemaTool(database_id=database_id),
+            GetSchemaTool(database_id=database_id, default_schema=schema_name),
             ExecuteSqlTool(database_id=database_id),
         ]
         super().__init__(provider, context, tools)
