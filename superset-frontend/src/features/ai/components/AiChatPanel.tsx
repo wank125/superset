@@ -27,23 +27,15 @@ import { AiSqlPreview } from './AiSqlPreview';
 interface AiChatPanelProps {
   databaseId: number;
   onSqlGenerated?: (sql: string) => void;
-  visible: boolean;
+  visible?: boolean;
   onClose: () => void;
 }
 
-const PanelContainer = styled.div<{ visible: boolean }>`
-  position: fixed;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 400px;
-  background: ${({ theme }) => theme.colorBgContainer};
-  border-left: 1px solid ${({ theme }) => theme.colorBorderSecondary};
+const PanelContainer = styled.div`
   display: flex;
   flex-direction: column;
-  z-index: 1000;
-  transform: translateX(${({ visible }) => (visible ? '0' : '100%')});
-  transition: transform 0.3s ease;
+  height: 100%;
+  background: ${({ theme }) => theme.colorBgContainer};
 `;
 
 const Header = styled.div`
@@ -106,7 +98,6 @@ const SendButton = styled.button<{ disabled: boolean }>`
 export function AiChatPanel({
   databaseId,
   onSqlGenerated,
-  visible,
   onClose,
 }: AiChatPanelProps) {
   const [inputValue, setInputValue] = useState('');
@@ -136,7 +127,7 @@ export function AiChatPanel({
   };
 
   return (
-    <PanelContainer visible={visible}>
+    <PanelContainer>
       <Header>
         <span>{t('AI Assistant')}</span>
         <CloseButton onClick={onClose}>✕</CloseButton>
