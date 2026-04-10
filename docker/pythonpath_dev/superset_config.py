@@ -99,7 +99,72 @@ class CeleryConfig:
 
 CELERY_CONFIG = CeleryConfig
 
-FEATURE_FLAGS = {"ALERT_REPORTS": True}
+# ============================================
+# Embedded Superset Configuration
+# ============================================
+FEATURE_FLAGS = {
+    "ALERT_REPORTS": True,
+    "EMBEDDED_SUPERSET": True,  # Enable embedded dashboards
+}
+
+# Guest Token JWT Configuration
+# IMPORTANT: Change this secret in production!
+GUEST_TOKEN_JWT_SECRET = "superset-embedded-secret-key-change-in-production"
+GUEST_TOKEN_JWT_AUDIENCE = "superset"
+GUEST_TOKEN_JWT_EXP_SECONDS = 86400  # 24 hours
+GUEST_ROLE_NAME = "Gamma"
+
+# CORS Configuration for Embedded Dashboards
+ENABLE_CORS = True
+CORS_OPTIONS = {
+    "supports_credentials": True,
+    "allow_headers": ["*"],
+    "resources": ["*"],
+    "origins": [
+        "http://localhost:3000",  # React dev server
+        "http://localhost:5000",  # Flask/Token service
+        "http://localhost:8000",  # Generic dev server
+        "http://localhost:8080",  # Vue dev server
+        "http://localhost:8888",  # Test HTTP server
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:8888",
+        "null",  # Allow file:// protocol for local testing
+        "*",  # Allow all origins for testing
+    ],
+}
+
+# ============================================
+# 🔧 Fix X-Frame-Options to allow iframe embedding
+# ============================================
+# Override HTTP headers to allow embedding
+HTTP_HEADERS = {"X-Frame-Options": "ALLOWALL"}
+X_FRAME_OPTIONS = None
+
+# Talisman configuration to allow iframe embedding
+TALISMAN_ENABLED = False
+TALISMAN_CONFIG = {
+    "content_security_policy": {
+        "default-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        "img-src": ["'self'", "data:", "blob:", "*"],
+        "worker-src": ["'self'", "blob:"],
+        "connect-src": ["'self'", "*"],
+        "object-src": "'none'",
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        "frame-ancestors": ["*"],  # Allow embedding from any domain
+    },
+    "content_security_policy_nonce_in": [],
+    "force_https": False,  # Set to True in production with HTTPS
+    "frame_options": None,  # Disable X-Frame-Options for embedding
+    "frame_options_allow_from": None,
+}
+
+# Disable CSP warnings for development
+CONTENT_SECURITY_POLICY_WARNING = False
+
 ALERT_REPORTS_NOTIFICATION_DRY_RUN = True
 WEBDRIVER_BASEURL = f"http://superset_app{os.environ.get('SUPERSET_APP_ROOT', '/')}/"  # When using docker compose baseurl should be http://superset_nginx{ENV{BASEPATH}}/  # noqa: E501
 # The base URL for the email report hyperlinks.
@@ -107,6 +172,18 @@ WEBDRIVER_BASEURL_USER_FRIENDLY = (
     f"http://localhost:8888/{os.environ.get('SUPERSET_APP_ROOT', '/')}/"
 )
 SQLLAB_CTAS_NO_LIMIT = True
+
+# ============================================
+# Frontend Development Server Configuration
+# ============================================
+# In development mode, frontend assets are served by the node dev server
+# Use empty string to let the backend proxy to the frontend server
+STATIC_ASSETS_PREFIX = ""
+SUPERSET_WORKER = ""  # Let the system auto-detect
+
+# Force the backend to proxy frontend requests through the frontend dev server
+# This enables the backend to serve frontend assets via proxy
+PROXY_FIX = True  # Enable proxying for development
 
 log_level_text = os.getenv("SUPERSET_LOG_LEVEL", "INFO")
 LOG_LEVEL = getattr(logging, log_level_text.upper(), logging.INFO)
