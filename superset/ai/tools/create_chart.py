@@ -24,21 +24,13 @@ import uuid
 from typing import Any
 
 from superset import db
+from superset.ai.chart_types.registry import get_chart_registry
 from superset.ai.tools.base import BaseTool
 from superset.commands.chart.create import CreateChartCommand
 from superset.connectors.sqla.models import SqlaTable
 
-# Whitelist of supported visualization types
-SUPPORTED_VIZ_TYPES = frozenset({
-    "echarts_timeseries_bar",
-    "echarts_timeseries_line",
-    "echarts_timeseries_smooth",
-    "echarts_area",
-    "pie",
-    "table",
-    "big_number_total",
-    "big_number",
-})
+# Supported visualization types — driven by the chart type registry
+SUPPORTED_VIZ_TYPES = get_chart_registry().get_supported_types()
 
 # Regex to parse simple aggregate expressions like "SUM(col)" or "COUNT(*)"
 _AGG_EXPR_RE = re.compile(
@@ -214,6 +206,16 @@ class CreateChartTool(BaseTool):
         groupby = params_fixed.get("groupby", [])
         if x_axis and isinstance(groupby, list) and x_axis in groupby:
             params_fixed["groupby"] = [g for g in groupby if g != x_axis]
+
+        # Registry-driven parameter validation
+        registry = get_chart_registry()
+        validation_issues = registry.validate_form_data(viz_type, params_fixed)
+        if validation_issues:
+            return (
+                f"Error: Parameter validation failed for '{viz_type}': "
+                + "; ".join(validation_issues)
+                + ". Please fix and retry."
+            )
 
         # Build form_data
         form_data = {

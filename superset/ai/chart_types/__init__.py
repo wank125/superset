@@ -14,31 +14,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Agent event types for streaming."""
+"""Chart type registry for AI agent chart creation."""
 
-from __future__ import annotations
+from superset.ai.chart_types.registry import ChartTypeRegistry, get_chart_registry
 
-from dataclasses import dataclass, field
-from typing import Any, Literal
-
-EventType = Literal[
-    "thinking",
-    "text_chunk",
-    "tool_call",
-    "tool_result",
-    "sql_generated",
-    "data_analyzed",
-    "chart_created",
-    "dashboard_created",
-    "error_fixed",
-    "done",
-    "error",
-]
-
-
-@dataclass
-class AgentEvent:
-    """A single event emitted by an agent during execution."""
-
-    type: EventType
-    data: dict[str, Any] = field(default_factory=dict)
+__all__ = ["ChartTypeRegistry", "get_chart_registry"]
