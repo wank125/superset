@@ -222,3 +222,260 @@ class TestToolCallRepetitionGuard:
         assert not guard.check("create_chart", {"chart_type": "bar"})
         assert not guard.check("create_chart", {"chart_type": "bar"})
         assert guard.check("create_chart", {"chart_type": "bar"})
+
+
+class TestToolOrderGuard:
+    """Tests for the sequential tool-order guard."""
+
+    def test_dashboard_create_dashboard_blocked_before_search(self):
+        from superset.ai.agent.langchain.guard import (
+            _DASHBOARD_PHASES,
+            ToolOrderGuard,
+        )
+
+        guard = ToolOrderGuard(phases=_DASHBOARD_PHASES)
+        # Phase 0: only search_datasets allowed for ordered tools
+        assert guard.check("search_datasets") is True
+        assert guard.check("analyze_data") is False
+        assert guard.check("create_dashboard") is False
+        assert guard.check("create_chart") is False
+
+    def test_read_tools_always_allowed(self):
+        from superset.ai.agent.langchain.guard import (
+            _DASHBOARD_PHASES,
+            ToolOrderGuard,
+        )
+
+        guard = ToolOrderGuard(phases=_DASHBOARD_PHASES)
+        # execute_sql and get_schema are read-only, always allowed
+        assert guard.check("execute_sql") is True
+        assert guard.check("get_schema") is True
+        # Even after advancing to later phases
+        guard.advance("search_datasets")
+        guard.advance("analyze_data")
+        guard.advance("create_chart")
+        assert guard.check("execute_sql") is True
+
+    def test_sequential_advance(self):
+        from superset.ai.agent.langchain.guard import (
+            _DASHBOARD_PHASES,
+            ToolOrderGuard,
+        )
+
+        guard = ToolOrderGuard(phases=_DASHBOARD_PHASES)
+        # Phase 0 → search_datasets
+        assert guard.check("search_datasets") is True
+        guard.advance("search_datasets")
+        # Phase 1 → analyze_data
+        assert guard.check("analyze_data") is True
+        assert guard.check("search_datasets") is True  # read tool now
+        guard.advance("analyze_data")
+        # Phase 2 → create_chart
+        assert guard.check("create_chart") is True
+        assert guard.check("create_dashboard") is False
+        guard.advance("create_chart")
+        # Phase 3 → create_dashboard
+        assert guard.check("create_dashboard") is True
+
+    def test_dashboard_out_of_order_blocked(self):
+        """create_dashboard at phase 0 must be blocked."""
+        from superset.ai.agent.langchain.guard import (
+            _DASHBOARD_PHASES,
+            ToolOrderGuard,
+        )
+
+        guard = ToolOrderGuard(phases=_DASHBOARD_PHASES)
+        # Trying to jump to create_dashboard at phase 0
+        assert guard.check("create_dashboard") is False
+        assert guard.phase_idx == 0
+
+    def test_no_guard_for_non_dashboard(self):
+        from superset.ai.agent.langchain.guard import create_order_guard
+
+        guard = create_order_guard("nl2sql")
+        assert guard is None
+
+        guard2 = create_order_guard("chart")
+        assert guard2 is None
+
+    def test_dashboard_guard_created(self):
+        from superset.ai.agent.langchain.guard import create_order_guard
+
+        guard = create_order_guard("dashboard")
+        assert guard is not None
+
+    def test_tool_adapter_blocks_side_effect_before_execution(self):
+        from superset.ai.agent.langchain.guard import (
+            _DASHBOARD_PHASES,
+            ToolOrderGuard,
+        )
+        from superset.ai.agent.langchain.tools import tool_adapter
+        from superset.ai.tools.base import BaseTool
+
+        class DangerousTool(BaseTool):
+            name = "create_dashboard"
+            description = "Create dashboard"
+            parameters_schema = {"type": "object", "properties": {}}
+
+            def __init__(self):
+                self.called = False
+
+            def run(self, arguments):
+                self.called = True
+                return "created"
+
+        native_tool = DangerousTool()
+        wrapped = tool_adapter(
+            native_tool,
+            order_guard=ToolOrderGuard(phases=_DASHBOARD_PHASES),
+        )
+
+        result = wrapped.invoke({})
+
+        assert result.startswith("Error:")
+        assert native_tool.called is False
+
+
+class TestDashboardAgentOrderEnforcement:
+    """Test legacy path: DashboardAgent.run() blocks out-of-order calls."""
+
+    @patch("superset.ai.agent.base.get_max_turns", return_value=5)
+    @patch("superset.ai.agent.context.cache_manager")
+    def test_create_dashboard_blocked_before_search(self, mock_cache, mock_turns):
+        from superset.ai.agent.context import ConversationContext
+        from superset.ai.agent.dashboard_agent import DashboardAgent
+
+        mock_cache.cache.get.return_value = None
+        mock_cache.cache.set = MagicMock()
+
+        mock_provider = MagicMock()
+        # First turn: LLM tries to call create_dashboard (out of order)
+        # Second turn: LLM gives up with a text response
+        mock_provider.chat_stream.side_effect = [
+            iter([
+                LLMStreamChunk(
+                    tool_calls=[
+                        ToolCall(
+                            id="tc_1",
+                            name="create_dashboard",
+                            arguments={"dashboard_title": "test", "chart_ids": [1]},
+                        )
+                    ]
+                ),
+                LLMStreamChunk(finish_reason="tool_calls"),
+            ]),
+            iter([
+                LLMStreamChunk(content="I need to search first"),
+                LLMStreamChunk(finish_reason="stop"),
+            ]),
+        ]
+
+        context = ConversationContext(user_id=1, session_id="test")
+        agent = DashboardAgent(
+            provider=mock_provider,
+            context=context,
+            database_id=1,
+        )
+        events = list(agent.run("create a dashboard"))
+
+        # Should contain an error event for out-of-order call
+        error_events = [e for e in events if e.type == "error"]
+        assert len(error_events) >= 1
+        assert "out of order" in error_events[0].data["message"].lower() or \
+               "before required" in error_events[0].data["message"].lower()
+
+
+class TestChartIdempotency:
+    """Test chart dedup: same title but different params → not a duplicate."""
+
+    def test_different_params_not_deduped(self):
+        from superset.ai.tools.create_chart import CreateChartTool
+
+        hash1 = CreateChartTool._compute_params_hash(
+            "echarts_timeseries_bar",
+            {"x_axis": "year", "metrics": ["SUM(num_boys)"]},
+        )
+        hash2 = CreateChartTool._compute_params_hash(
+            "echarts_timeseries_bar",
+            {"x_axis": "year", "metrics": ["SUM(num_girls)"]},
+        )
+        assert hash1 != hash2
+
+    def test_same_params_same_hash(self):
+        from superset.ai.tools.create_chart import CreateChartTool
+
+        hash1 = CreateChartTool._compute_params_hash(
+            "pie",
+            {"metric": "SUM(value)", "groupby": ["category"]},
+        )
+        hash2 = CreateChartTool._compute_params_hash(
+            "pie",
+            {"metric": "SUM(value)", "groupby": ["category"]},
+        )
+        assert hash1 == hash2
+
+    def test_groupby_order_irrelevant(self):
+        from superset.ai.tools.create_chart import CreateChartTool
+
+        hash1 = CreateChartTool._compute_params_hash(
+            "table",
+            {"groupby": ["a", "b"], "metrics": ["SUM(x)"]},
+        )
+        hash2 = CreateChartTool._compute_params_hash(
+            "table",
+            {"groupby": ["b", "a"], "metrics": ["SUM(x)"]},
+        )
+        assert hash1 == hash2
+
+
+class TestDashboardIdempotency:
+    """Test dashboard dedup: same title but different chart_ids → not duplicate."""
+
+    def test_different_chart_ids_different_hash(self):
+
+        import hashlib
+
+        ids1 = [1, 2, 3]
+        ids2 = [1, 2, 4]
+        h1 = hashlib.sha256(json.dumps(sorted(ids1)).encode()).hexdigest()[:16]
+        h2 = hashlib.sha256(json.dumps(sorted(ids2)).encode()).hexdigest()[:16]
+        assert h1 != h2
+
+    def test_same_chart_ids_same_hash(self):
+        import hashlib
+
+        ids1 = [3, 1, 2]
+        ids2 = [2, 3, 1]
+        h1 = hashlib.sha256(json.dumps(sorted(ids1)).encode()).hexdigest()[:16]
+        h2 = hashlib.sha256(json.dumps(sorted(ids2)).encode()).hexdigest()[:16]
+        assert h1 == h2
+
+
+class TestLangChainOrderGuard:
+    """Test that LangChain runner uses order guard for dashboard agent."""
+
+    def test_order_guard_initialized_for_dashboard(self):
+        from superset.ai.agent.langchain.runner import LangChainAgentRunner
+
+        runner = LangChainAgentRunner(
+            agent_type="dashboard",
+            database_id=1,
+            schema_name=None,
+            user_id=1,
+            session_id="test",
+        )
+        assert runner._order_guard is not None
+        assert runner._order_guard.check("create_dashboard") is False
+        assert runner._order_guard.check("search_datasets") is True
+
+    def test_order_guard_not_initialized_for_nl2sql(self):
+        from superset.ai.agent.langchain.runner import LangChainAgentRunner
+
+        runner = LangChainAgentRunner(
+            agent_type="nl2sql",
+            database_id=1,
+            schema_name=None,
+            user_id=1,
+            session_id="test",
+        )
+        assert runner._order_guard is None

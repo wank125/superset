@@ -74,3 +74,87 @@ class ToolCallRepetitionGuard:
         except TypeError:
             logger.debug("Failed to JSON-normalize tool arguments", exc_info=True)
             return str(arguments)
+
+
+# Ordered phases for dashboard agent tool calls.
+_DASHBOARD_PHASES: list[str] = [
+    "search_datasets",
+    "analyze_data",
+    "create_chart",
+    "create_dashboard",
+]
+
+# Read-only tools that are always allowed regardless of phase.
+_READ_TOOLS: set[str] = {
+    "execute_sql",
+    "get_schema",
+}
+
+
+class ToolOrderGuard:
+    """Enforces sequential tool-calling order for a given agent type.
+
+    Used by both LegacyAgentRunner (via DashboardAgent) and
+    LangChainAgentRunner.  Each call to ``check`` records the tool and
+    returns True if the tool is allowed at the current phase, False if
+    it violates the order.
+    """
+
+    def __init__(self, phases: list[str] | None = None) -> None:
+        self._phases = phases or []
+        self._phase_idx = 0
+
+    def check(self, tool_name: str) -> bool:
+        """Return True if *tool_name* is allowed at the current phase.
+
+        Read-only tools always pass. Ordered tools may be called when
+        they are the current phase or an already-completed phase. After
+        an ordered tool executes the caller should call ``advance(tool_name)``.
+        """
+        if not self._phases:
+            return True  # no ordering enforced
+        if tool_name in _READ_TOOLS:
+            return True
+        phase = self._phase_of(tool_name)
+        if phase < 0:
+            return True  # unknown tool — don't block
+        return phase <= self._phase_idx
+
+    def advance(self, tool_name: str) -> None:
+        """Move to the next phase after *tool_name* is executed."""
+        phase = self._phase_of(tool_name)
+        if phase >= 0 and phase == self._phase_idx:
+            self._phase_idx = min(self._phase_idx + 1, len(self._phases))
+
+    @property
+    def phase_idx(self) -> int:
+        """Current phase index (for testing)."""
+        return self._phase_idx
+
+    @property
+    def allowed_tools(self) -> set[str]:
+        """Set of tool names allowed at the current phase."""
+        if not self._phases:
+            return set()  # no ordering enforced
+        allowed: set[str] = set(_READ_TOOLS)
+        end_idx = min(self._phase_idx + 1, len(self._phases))
+        allowed.update(self._phases[:end_idx])
+        return allowed
+
+    def reset(self) -> None:
+        """Reset to initial phase."""
+        self._phase_idx = 0
+
+    def _phase_of(self, tool_name: str) -> int:
+        """Return the phase index for a tool, or -1 if untracked."""
+        try:
+            return self._phases.index(tool_name)
+        except ValueError:
+            return -1
+
+
+def create_order_guard(agent_type: str) -> ToolOrderGuard | None:
+    """Factory: return a ToolOrderGuard for the given agent type, or None."""
+    if agent_type == "dashboard":
+        return ToolOrderGuard(phases=_DASHBOARD_PHASES)
+    return None

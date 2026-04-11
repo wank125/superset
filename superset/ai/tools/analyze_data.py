@@ -18,12 +18,12 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from superset.ai.chart_types.registry import get_chart_registry
 from superset.ai.tools.base import BaseTool
 from superset.ai.tools.execute_sql import ExecuteSqlTool
+from superset.utils import json
 
 
 class AnalyzeDataTool(BaseTool):
@@ -210,7 +210,7 @@ class AnalyzeDataTool(BaseTool):
                 recs.append({
                     "viz_type": "echarts_timeseries_bar",
                     "confidence": "high",
-                    "reason": f"分类维度 + 数值指标 → 适合柱状图对比",
+                    "reason": "分类维度 + 数值指标 → 适合柱状图对比",
                 })
             if distinct <= 5:
                 recs.append({

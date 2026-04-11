@@ -28,7 +28,11 @@ from langgraph.prebuilt import create_react_agent
 
 from superset.ai.agent.events import AgentEvent
 from superset.ai.agent.langchain.callbacks import SafeguardCallbackHandler
-from superset.ai.agent.langchain.guard import ToolCallRepetitionGuard
+from superset.ai.agent.langchain.guard import (
+    create_order_guard,
+    ToolCallRepetitionGuard,
+    ToolOrderGuard,
+)
 from superset.ai.agent.langchain.llm import get_langchain_llm
 from superset.ai.agent.langchain.memory import LangChainMemoryAdapter
 from superset.ai.agent.langchain.prompts import prompt_adapter
@@ -124,6 +128,9 @@ class LangChainAgentRunner(AgentRunner):
             max_consecutive=3,
             tracked_tools={"create_chart", "create_dashboard"},
         )
+        self._order_guard: ToolOrderGuard | None = create_order_guard(
+            agent_type
+        )
         self._content_parts: list[str] = []
 
     def run(self, message: str) -> Iterator[AgentEvent]:
@@ -132,6 +139,8 @@ class LangChainAgentRunner(AgentRunner):
 
         self._tool_guard.reset()
         self._content_parts = []
+        if self._order_guard is not None:
+            self._order_guard.reset()
 
         # Use override_user if a User object was provided via set_user().
         # This ensures g.user is a proper User instance for permission
@@ -148,7 +157,9 @@ class LangChainAgentRunner(AgentRunner):
         native_tools = _instantiate_tools(
             self._agent_type, self._database_id, self._schema_name
         )
-        lc_tools = [tool_adapter(t) for t in native_tools]
+        lc_tools = [
+            tool_adapter(t, order_guard=self._order_guard) for t in native_tools
+        ]
         memory = self._get_memory()
         prompt = prompt_adapter(self._agent_type, self._schema_name)
 
@@ -223,7 +234,7 @@ class LangChainAgentRunner(AgentRunner):
         if result is not None:
             yield from result
 
-    def _handle_messages(self, chunk: Any) -> Iterator[AgentEvent]:
+    def _handle_messages(self, chunk: Any) -> Iterator[AgentEvent]:  # noqa: C901
         """Handle 'messages' stream mode — text tokens and tool call chunks."""
         if not isinstance(chunk, tuple) or len(chunk) != 2:
             return
@@ -266,17 +277,46 @@ class LangChainAgentRunner(AgentRunner):
                             )
                             return
 
+                        # Sequential order enforcement for dashboard agent
+                        if (
+                            self._order_guard is not None
+                            and not self._order_guard.check(tool_name)
+                        ):
+                            allowed = sorted(
+                                self._order_guard.allowed_tools
+                            )
+                            logger.warning(
+                                "Tool '%s' blocked by order guard "
+                                "(phase=%d), allowed: %s",
+                                tool_name,
+                                self._order_guard.phase_idx,
+                                allowed,
+                            )
+                            yield AgentEvent(
+                                type="error",
+                                data={
+                                    "message": (
+                                        f"Tool '{tool_name}' called out of "
+                                        f"order. Allowed: {', '.join(allowed)}"
+                                    ),
+                                },
+                            )
+                            return
+
                         yield AgentEvent(
                             type="tool_call",
                             data={"tool": tool_name, "args": args},
                         )
 
         elif isinstance(msg, ToolMessage):
-            # Tool execution result
+            # Tool execution result — advance order guard on success
+            tool_name = getattr(msg, "name", "")
+            if self._order_guard is not None and tool_name:
+                self._order_guard.advance(tool_name)
             yield AgentEvent(
                 type="tool_result",
                 data={
-                    "tool": getattr(msg, "name", ""),
+                    "tool": tool_name,
                     "result": msg.content,
                 },
             )

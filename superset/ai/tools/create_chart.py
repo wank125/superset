@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-import json
+import hashlib
 import logging
 import re
 import uuid
@@ -30,6 +30,7 @@ from superset.ai.chart_types.registry import get_chart_registry
 from superset.ai.tools.base import BaseTool
 from superset.commands.chart.create import CreateChartCommand
 from superset.connectors.sqla.models import SqlaTable
+from superset.utils import json
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ class CreateChartTool(BaseTool):
         },
     }
 
-    def run(self, arguments: dict[str, Any]) -> str:
+    def run(self, arguments: dict[str, Any]) -> str:  # noqa: C901
         slice_name = arguments.get("slice_name", "")
         viz_type = arguments.get("viz_type", "")
         datasource_id = arguments.get("datasource_id")
@@ -183,29 +184,6 @@ class CreateChartTool(BaseTool):
                 return "Error: You do not have permission to create charts."
         except Exception:
             return "Error: Unable to verify chart creation permissions."
-
-        # Idempotency: skip if an identical chart was created recently
-        existing = self._find_duplicate(slice_name, viz_type, datasource_id)
-        if existing:
-            explore_url = f"/explore/?slice_id={existing.id}"
-            logger.info(
-                "Skipping duplicate chart creation: '%s' (id=%d)",
-                slice_name,
-                existing.id,
-            )
-            return json.dumps(
-                {
-                    "chart_id": existing.id,
-                    "slice_name": existing.slice_name,
-                    "viz_type": viz_type,
-                    "explore_url": explore_url,
-                    "message": (
-                        f"Chart '{slice_name}' already exists (id={existing.id}). "
-                        f"Reusing existing chart. View at: {explore_url}"
-                    ),
-                },
-                ensure_ascii=False,
-            )
 
         # Look up datasource columns for metric auto-conversion
         column_lookup, saved_metrics = self._get_datasource_meta(datasource_id)
@@ -255,6 +233,34 @@ class CreateChartTool(BaseTool):
             **params_fixed,
         }
 
+        # Idempotency: skip if a truly equivalent chart was created recently.
+        # Compare the final normalized form_data, not the raw LLM params.
+        params_hash = self._compute_params_hash(viz_type, form_data)
+        existing = self._find_duplicate(
+            slice_name, viz_type, datasource_id, params_hash
+        )
+        if existing and self._can_reuse_chart(existing):
+            explore_url = f"/explore/?slice_id={existing.id}"
+            logger.info(
+                "Skipping duplicate chart creation: '%s' (id=%d)",
+                slice_name,
+                existing.id,
+            )
+            return json.dumps(
+                {
+                    "chart_id": existing.id,
+                    "slice_name": existing.slice_name,
+                    "viz_type": viz_type,
+                    "explore_url": explore_url,
+                    "message": (
+                        f"Chart '{slice_name}' already exists "
+                        f"(id={existing.id}). Reusing. View at: "
+                        f"{explore_url}"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
         # Construct the data dict for CreateChartCommand
         chart_data: dict[str, Any] = {
             "slice_name": slice_name[:250],
@@ -288,16 +294,52 @@ class CreateChartTool(BaseTool):
         )
 
     @staticmethod
+    def _compute_params_hash(viz_type: str, params: dict[str, Any]) -> str:
+        """Return a stable hash of the chart params for dedup.
+
+        Normalizes metric/groupby ordering and ignores keys that don't
+        affect visual equivalence (e.g. row_limit).
+        """
+
+        # Keys that affect visual output
+        content_keys = {
+            "metrics", "metric", "groupby", "x_axis", "y_axis",
+            "granularity_sqla", "time_range", "columns",
+            "source", "target", "series", "entity", "x", "y",
+            "size", "metricsA", "metricsB", "column",
+            # Filter fields — directly affect result set
+            "adhoc_filters", "extra_filters", "where", "having",
+            "filters", "row_limit",
+        }
+        normalized: dict[str, Any] = {}
+        for k in sorted(content_keys):
+            if k in params:
+                val = params[k]
+                # Sort lists for stable comparison
+                if isinstance(val, list):
+                    val = sorted(val, key=str)
+                normalized[k] = val
+        payload = json.dumps(
+            {"viz_type": viz_type, **normalized},
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    @staticmethod
     def _find_duplicate(
-        slice_name: str, viz_type: str, datasource_id: int
+        slice_name: str,
+        viz_type: str,
+        datasource_id: int,
+        params_hash: str,
     ) -> Any:
-        """Check for a recently-created chart with the same key fields."""
+        """Check for a recently-created chart with matching business key."""
         from superset.models.slice import Slice
 
         cutoff = datetime.now(timezone.utc) - timedelta(
             minutes=_IDEMPOTENCY_WINDOW_MINUTES
         )
-        return (
+        candidates = (
             db.session.query(Slice)
             .filter(
                 Slice.slice_name == slice_name,
@@ -305,11 +347,41 @@ class CreateChartTool(BaseTool):
                 Slice.datasource_id == datasource_id,
                 Slice.changed_on >= cutoff,
             )
-            .first()
+            .all()
         )
+        for s in candidates:
+            try:
+                stored = json.loads(s.params) if s.params else {}
+            except (json.JSONDecodeError, TypeError):
+                continue
+            stored_hash = CreateChartTool._compute_params_hash(
+                viz_type, stored
+            )
+            if stored_hash == params_hash:
+                return s
+        return None
 
     @staticmethod
-    def _normalize_params(viz_type: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _can_reuse_chart(chart: Any) -> bool:
+        """Verify the current user can access the chart's datasource."""
+        try:
+            from superset.extensions import security_manager
+
+            table = (
+                db.session.query(SqlaTable)
+                .filter_by(id=chart.datasource_id)
+                .first()
+            )
+            if table and not security_manager.can_access_datasource(table):
+                return False
+            if not security_manager.can_access("can_read", "Chart"):
+                return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _normalize_params(viz_type: str, params: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         """Normalize LLM-generated params to match expected types.
 
         Handles common LLM mistakes:

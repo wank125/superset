@@ -19,12 +19,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, create_model
 
 from superset.ai.tools.base import BaseTool
+
+if TYPE_CHECKING:
+    from superset.ai.agent.langchain.guard import ToolOrderGuard
 
 logger = logging.getLogger(__name__)
 
@@ -59,19 +62,48 @@ def _schema_to_pydantic(schema: dict[str, Any]) -> type[BaseModel]:
     return create_model("ToolArgs", **field_definitions)
 
 
-def tool_adapter(native_tool: BaseTool) -> StructuredTool:
+def tool_adapter(
+    native_tool: BaseTool,
+    order_guard: ToolOrderGuard | None = None,
+) -> StructuredTool:
     """Wrap a Superset BaseTool as a LangChain StructuredTool.
 
-    Zero-modification wrapper — existing tools don't need any changes.
+    If *order_guard* is provided, the wrapper checks the guard before
+    executing the tool.  When the guard blocks the call, the tool
+    returns an error message instead of executing the real tool — this
+    prevents LangGraph from performing side effects out of order.
     """
     args_schema = _schema_to_pydantic(native_tool.parameters_schema)
+    tool_name = native_tool.name
 
     def _run(**kwargs: Any) -> str:
-        return native_tool.run(kwargs)
+        # Order guard: block execution if tool is called out of sequence.
+        # This runs *inside* LangGraph's tool execution, so it actually
+        # prevents side effects — unlike checking in the stream handler.
+        if order_guard is not None and not order_guard.check(tool_name):
+            allowed = sorted(order_guard.allowed_tools)
+            msg = (
+                f"Tool '{tool_name}' called out of order. "
+                f"Call one of: {', '.join(allowed)} first."
+            )
+            logger.warning(
+                "Order guard blocked '%s' (phase=%d)",
+                tool_name,
+                order_guard.phase_idx,
+            )
+            return f"Error: {msg}"
+
+        result = native_tool.run(kwargs)
+
+        # Advance phase after successful execution.
+        if order_guard is not None and not result.startswith("Error"):
+            order_guard.advance(tool_name)
+
+        return result
 
     return StructuredTool.from_function(
         func=_run,
-        name=native_tool.name,
+        name=tool_name,
         description=native_tool.description,
         args_schema=args_schema,
     )

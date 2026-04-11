@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-import json
+import hashlib
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -31,9 +31,11 @@ from superset.commands.dashboard.export import (
     append_charts,
     get_default_position,
 )
+from superset.connectors.sqla.models import SqlaTable
 from superset.daos.dashboard import DashboardDAO
 from superset.models.dashboard import Dashboard
 from superset.models.slice import Slice
+from superset.utils import json
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,7 @@ class CreateDashboardTool(BaseTool):
         },
     }
 
-    def run(self, arguments: dict[str, Any]) -> str:
+    def run(self, arguments: dict[str, Any]) -> str:  # noqa: C901
         title = arguments.get("dashboard_title", "").strip()
         chart_ids = arguments.get("chart_ids", [])
         slug = arguments.get("slug", "")
@@ -96,40 +98,6 @@ class CreateDashboardTool(BaseTool):
                 return "Error: You do not have permission to create dashboards."
         except Exception:
             return "Error: Unable to verify dashboard creation permissions."
-
-        # Idempotency: skip if a dashboard with the same title was created recently
-        cutoff = datetime.now(timezone.utc) - timedelta(
-            minutes=_IDEMPOTENCY_WINDOW_MINUTES
-        )
-        existing = (
-            db.session.query(Dashboard)
-            .filter(
-                Dashboard.dashboard_title == title,
-                Dashboard.changed_on >= cutoff,
-            )
-            .first()
-        )
-        if existing:
-            dashboard_url = f"/superset/dashboard/{existing.id}/"
-            logger.info(
-                "Skipping duplicate dashboard creation: '%s' (id=%d)",
-                title,
-                existing.id,
-            )
-            return json.dumps(
-                {
-                    "dashboard_id": existing.id,
-                    "dashboard_title": existing.dashboard_title,
-                    "dashboard_url": dashboard_url,
-                    "chart_count": len(existing.slices),
-                    "chart_ids": sorted(s.id for s in existing.slices),
-                    "message": (
-                        f"Dashboard '{title}' already exists (id={existing.id}). "
-                        f"Reusing existing dashboard. View at: {dashboard_url}"
-                    ),
-                },
-                ensure_ascii=False,
-            )
 
         # Look up all chart slices and verify access
         from superset.extensions import security_manager
@@ -159,6 +127,33 @@ class CreateDashboardTool(BaseTool):
             return f"Error: Cannot access charts: {sorted(inaccessible)}"
 
         found_ids = {s.id for s in slices}
+
+        # Idempotency: skip only after validating every requested chart.
+        # This avoids leaking an existing dashboard before access checks.
+        sorted_ids = sorted(found_ids)
+        existing = self._find_duplicate(title, sorted_ids)
+        if existing and self._can_reuse_dashboard(existing):
+            dashboard_url = f"/superset/dashboard/{existing.id}/"
+            logger.info(
+                "Skipping duplicate dashboard creation: '%s' (id=%d)",
+                title,
+                existing.id,
+            )
+            return json.dumps(
+                {
+                    "dashboard_id": existing.id,
+                    "dashboard_title": existing.dashboard_title,
+                    "dashboard_url": dashboard_url,
+                    "chart_count": len(existing.slices),
+                    "chart_ids": sorted(s.id for s in existing.slices),
+                    "message": (
+                        f"Dashboard '{title}' already exists "
+                        f"(id={existing.id}). Reusing. View at: "
+                        f"{dashboard_url}"
+                    ),
+                },
+                ensure_ascii=False,
+            )
 
         # Generate a slug if not provided
         if not slug:
@@ -205,3 +200,52 @@ class CreateDashboardTool(BaseTool):
             },
             ensure_ascii=False,
         )
+
+    @staticmethod
+    def _find_duplicate(
+        title: str, sorted_chart_ids: list[int]
+    ) -> Any:
+        """Find a dashboard with same title and chart set within window."""
+
+        id_hash = hashlib.sha256(
+            json.dumps(sorted_chart_ids).encode()
+        ).hexdigest()[:16]
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=_IDEMPOTENCY_WINDOW_MINUTES
+        )
+        candidates = (
+            db.session.query(Dashboard)
+            .filter(
+                Dashboard.dashboard_title == title,
+                Dashboard.changed_on >= cutoff,
+            )
+            .all()
+        )
+        for d in candidates:
+            existing_ids = sorted(s.id for s in d.slices)
+            existing_hash = hashlib.sha256(
+                json.dumps(existing_ids).encode()
+            ).hexdigest()[:16]
+            if existing_hash == id_hash:
+                return d
+        return None
+
+    @staticmethod
+    def _can_reuse_dashboard(dashboard: Any) -> bool:
+        """Verify the current user can access the dashboard + its charts."""
+        try:
+            from superset.extensions import security_manager
+
+            if not security_manager.can_access("can_read", "Dashboard"):
+                return False
+            for sl in dashboard.slices:
+                table = (
+                    db.session.query(SqlaTable)
+                    .filter_by(id=sl.datasource_id)
+                    .first()
+                )
+                if table and not security_manager.can_access_datasource(table):
+                    return False
+            return True
+        except Exception:
+            return False
