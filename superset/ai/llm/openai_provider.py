@@ -103,6 +103,8 @@ class OpenAIProvider(BaseLLMProvider):
             "max_tokens": self._max_tokens,
             "stream": stream,
         }
+        parallel_tool_calls = self._config.get("parallel_tool_calls", False)
+        body["parallel_tool_calls"] = bool(parallel_tool_calls)
         if tools:
             body["tools"] = tools
         return body
