@@ -19,8 +19,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from superset import db
@@ -28,6 +30,12 @@ from superset.ai.chart_types.registry import get_chart_registry
 from superset.ai.tools.base import BaseTool
 from superset.commands.chart.create import CreateChartCommand
 from superset.connectors.sqla.models import SqlaTable
+
+logger = logging.getLogger(__name__)
+
+# Idempotency window: skip chart creation if an identical chart was
+# created within this time span (prevents LLM duplicate calls).
+_IDEMPOTENCY_WINDOW_MINUTES = 10
 
 # Supported visualization types — driven by the chart type registry
 SUPPORTED_VIZ_TYPES = get_chart_registry().get_supported_types()
@@ -176,6 +184,29 @@ class CreateChartTool(BaseTool):
         except Exception:
             return "Error: Unable to verify chart creation permissions."
 
+        # Idempotency: skip if an identical chart was created recently
+        existing = self._find_duplicate(slice_name, viz_type, datasource_id)
+        if existing:
+            explore_url = f"/explore/?slice_id={existing.id}"
+            logger.info(
+                "Skipping duplicate chart creation: '%s' (id=%d)",
+                slice_name,
+                existing.id,
+            )
+            return json.dumps(
+                {
+                    "chart_id": existing.id,
+                    "slice_name": existing.slice_name,
+                    "viz_type": viz_type,
+                    "explore_url": explore_url,
+                    "message": (
+                        f"Chart '{slice_name}' already exists (id={existing.id}). "
+                        f"Reusing existing chart. View at: {explore_url}"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
         # Look up datasource columns for metric auto-conversion
         column_lookup, saved_metrics = self._get_datasource_meta(datasource_id)
 
@@ -187,7 +218,7 @@ class CreateChartTool(BaseTool):
             )
 
         # Auto-convert metrics to proper Superset metric objects
-        params_fixed = dict(params_dict)
+        params_fixed = self._normalize_params(viz_type, params_dict)
         for key in ("metrics", "metric"):
             if key in params_fixed:
                 val = params_fixed[key]
@@ -255,6 +286,91 @@ class CreateChartTool(BaseTool):
             },
             ensure_ascii=False,
         )
+
+    @staticmethod
+    def _find_duplicate(
+        slice_name: str, viz_type: str, datasource_id: int
+    ) -> Any:
+        """Check for a recently-created chart with the same key fields."""
+        from superset.models.slice import Slice
+
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=_IDEMPOTENCY_WINDOW_MINUTES
+        )
+        return (
+            db.session.query(Slice)
+            .filter(
+                Slice.slice_name == slice_name,
+                Slice.viz_type == viz_type,
+                Slice.datasource_id == datasource_id,
+                Slice.changed_on >= cutoff,
+            )
+            .first()
+        )
+
+    @staticmethod
+    def _normalize_params(viz_type: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Normalize LLM-generated params to match expected types.
+
+        Handles common LLM mistakes:
+        - metrics as string instead of list
+        - metric as list instead of string
+        - groupby as string instead of list
+        - x_axis as list instead of string
+        """
+        fixed = dict(params)
+        registry = get_chart_registry()
+        desc = registry.get(viz_type)
+
+        # Determine if this viz_type uses metric (singular) or metrics (plural)
+        uses_singular = desc.uses_metric_singular if desc else False
+
+        if uses_singular:
+            # Ensure 'metric' is a single string
+            if "metric" in fixed:
+                val = fixed["metric"]
+                if isinstance(val, list):
+                    fixed["metric"] = val[0] if val else ""
+                elif isinstance(val, dict):
+                    fixed["metric"] = val  # pass through
+            # If 'metrics' given but type expects 'metric', convert
+            if "metrics" not in fixed and "metric" not in fixed:
+                pass  # neither provided, will be caught by validation
+            elif "metrics" in fixed and "metric" not in fixed:
+                val = fixed.pop("metrics")
+                if isinstance(val, list) and val:
+                    fixed["metric"] = val[0]
+                elif isinstance(val, str):
+                    fixed["metric"] = val
+        else:
+            # Ensure 'metrics' is a list
+            if "metrics" in fixed:
+                val = fixed["metrics"]
+                if isinstance(val, str):
+                    fixed["metrics"] = [val]
+                elif isinstance(val, dict):
+                    fixed["metrics"] = [val]
+            # If 'metric' given but type expects 'metrics', convert
+            if "metric" in fixed and "metrics" not in fixed:
+                val = fixed.pop("metric")
+                if isinstance(val, str):
+                    fixed["metrics"] = [val]
+                elif isinstance(val, list):
+                    fixed["metrics"] = val
+
+        # Ensure groupby is always a list
+        if "groupby" in fixed:
+            val = fixed["groupby"]
+            if isinstance(val, str):
+                fixed["groupby"] = [val]
+
+        # Ensure x_axis is always a string
+        if "x_axis" in fixed:
+            val = fixed["x_axis"]
+            if isinstance(val, list):
+                fixed["x_axis"] = val[0] if val else ""
+
+        return fixed
 
     @staticmethod
     def _get_datasource_meta(

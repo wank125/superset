@@ -19,7 +19,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from superset import db
@@ -30,7 +32,14 @@ from superset.commands.dashboard.export import (
     get_default_position,
 )
 from superset.daos.dashboard import DashboardDAO
+from superset.models.dashboard import Dashboard
 from superset.models.slice import Slice
+
+logger = logging.getLogger(__name__)
+
+# Idempotency window: skip dashboard creation if one with the same title
+# was created within this time span.
+_IDEMPOTENCY_WINDOW_MINUTES = 10
 
 
 class CreateDashboardTool(BaseTool):
@@ -87,6 +96,40 @@ class CreateDashboardTool(BaseTool):
                 return "Error: You do not have permission to create dashboards."
         except Exception:
             return "Error: Unable to verify dashboard creation permissions."
+
+        # Idempotency: skip if a dashboard with the same title was created recently
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=_IDEMPOTENCY_WINDOW_MINUTES
+        )
+        existing = (
+            db.session.query(Dashboard)
+            .filter(
+                Dashboard.dashboard_title == title,
+                Dashboard.changed_on >= cutoff,
+            )
+            .first()
+        )
+        if existing:
+            dashboard_url = f"/superset/dashboard/{existing.id}/"
+            logger.info(
+                "Skipping duplicate dashboard creation: '%s' (id=%d)",
+                title,
+                existing.id,
+            )
+            return json.dumps(
+                {
+                    "dashboard_id": existing.id,
+                    "dashboard_title": existing.dashboard_title,
+                    "dashboard_url": dashboard_url,
+                    "chart_count": len(existing.slices),
+                    "chart_ids": sorted(s.id for s in existing.slices),
+                    "message": (
+                        f"Dashboard '{title}' already exists (id={existing.id}). "
+                        f"Reusing existing dashboard. View at: {dashboard_url}"
+                    ),
+                },
+                ensure_ascii=False,
+            )
 
         # Look up all chart slices and verify access
         from superset.extensions import security_manager

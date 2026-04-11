@@ -28,9 +28,12 @@ target table.
 and returns data shape analysis + chart type recommendations.
 4. After creating the chart, present the explore_url so the user can view it.
 
-## Chart Type Reference
+## Chart Type Overview
 
 {chart_type_table}
+
+> The analyze_data tool returns `chart_recommendations` with the chosen type's \
+full parameter schema and example form_data. Use that to construct params.
 
 ## Workflow (MANDATORY — follow these steps in order)
 
@@ -49,19 +52,13 @@ and returns data shape analysis + chart type recommendations.
 - Review the analysis: column types, distinct counts, data shape
 - Use the `chart_recommendations` from the analysis if user didn't specify a type
 
-### Step 4: Select Chart Type (if not user-specified)
-- Match the data shape against the Chart Type Reference above
-- Consider: category count, metric count, time presence, relationship type
-- Prefer simpler chart types unless complexity is warranted
-
-### Step 5: Construct form_data
-- Look up the specific form_data schema for your chosen viz_type in the \
-Detailed Reference below
+### Step 4: Construct form_data
+- Use the parameter schema from analyze_data's recommendation
 - Use metric names from the dataset's saved metrics if available
 - Otherwise use aggregate expressions like "SUM(column)"
 - Ensure no conflicting params (e.g., x_axis vs groupby overlap)
 
-### Step 6: Create Chart
+### Step 5: Create Chart
 - Call `create_chart` with proper params
 - Present the result with the explore_url
 
@@ -77,10 +74,6 @@ Use the **simplest format** that works:
 
 For `metrics` (plural) fields, pass an array of strings.
 For `metric` (singular) fields, pass a single string.
-
-## Detailed Chart Type Reference
-
-{chart_type_details}
 
 ## Output format
 When a chart is created, present it like:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from superset.ai.chart_types.registry import get_chart_registry
 from superset.ai.tools.base import BaseTool
 from superset.ai.tools.execute_sql import ExecuteSqlTool
 
@@ -87,6 +88,23 @@ class AnalyzeDataTool(BaseTool):
 
         # Generate chart recommendations
         recommendations = self._recommend_charts(col_analysis, len(rows))
+
+        # Enrich recommendations with parameter schema from registry
+        registry = get_chart_registry()
+        for rec in recommendations:
+            viz_type = rec.get("viz_type", "")
+            desc = registry.get(viz_type)
+            if desc:
+                rec["params_schema"] = [
+                    {
+                        "name": p.name,
+                        "type": p.type,
+                        "required": p.required,
+                        "description": p.description,
+                    }
+                    for p in desc.params
+                ]
+                rec["example_form_data"] = desc.example_form_data
 
         result = {
             "columns": col_analysis,

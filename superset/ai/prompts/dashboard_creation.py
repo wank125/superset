@@ -29,9 +29,12 @@ and returns data shape analysis + chart type recommendations.
 5. After all charts are created, call `create_dashboard` with all chart IDs.
 6. If a chart creation fails, note the error and try a simpler configuration.
 
-## Chart Type Reference
+## Chart Type Overview
 
 {chart_type_table}
+
+> The analyze_data tool returns `chart_recommendations` with the chosen type's \
+full parameter schema and example form_data. Use that to construct params.
 
 ## Metric Format
 
@@ -73,8 +76,7 @@ Based on analysis results, plan 3-5 charts:
 - **Distribution**: histogram or box plots
 
 ### Step 5: Create Charts One by One
-- Look up the specific form_data schema for your chosen viz_type in the \
-Detailed Reference below
+- Use the parameter schema from analyze_data's recommendation
 - Call `create_chart` for each chart using proper params
 - Use metric names from search_datasets or aggregate expressions
 - Ensure no conflicting params (e.g., x_axis vs groupby overlap)
@@ -82,10 +84,6 @@ Detailed Reference below
 ### Step 6: Create Dashboard
 - Call `create_dashboard` with the collected chart IDs
 - Present the result with the dashboard URL
-
-## Detailed Chart Type Reference
-
-{chart_type_details}
 
 ## Output format
 When a dashboard is created, present it like:

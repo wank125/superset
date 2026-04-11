@@ -59,11 +59,9 @@ class ChartAgent(BaseAgent):
     def get_system_prompt(self) -> str:
         registry = get_chart_registry()
         chart_table = registry.format_for_prompt()
-        chart_details = registry.format_all_details()
 
         prompt = CHART_CREATION_SYSTEM_PROMPT.format(
             chart_type_table=chart_table,
-            chart_type_details=chart_details,
         )
         if self._schema_name:
             prompt += f"\n\nThe user is working in schema: {self._schema_name}"
