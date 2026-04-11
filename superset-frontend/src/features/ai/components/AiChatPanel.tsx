@@ -19,6 +19,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { styled, t } from '@superset-ui/core';
+import { Radio } from '@superset-ui/core/components';
 import { useAiChat } from '../hooks/useAiChat';
 import { AiMessageBubble } from './AiMessageBubble';
 import { AiStreamingText } from './AiStreamingText';
@@ -27,6 +28,7 @@ import { AiSqlPreview } from './AiSqlPreview';
 interface AiChatPanelProps {
   databaseId: number;
   onSqlGenerated?: (sql: string) => void;
+  onChartCreated?: (chartId: number, exploreUrl: string) => void;
   visible?: boolean;
   onClose: () => void;
 }
@@ -44,6 +46,15 @@ const Header = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
+`;
+
+const HeaderLeft = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+`;
+
+const HeaderTitle = styled.span`
   font-weight: ${({ theme }) => theme.fontWeightStrong};
 `;
 
@@ -95,15 +106,53 @@ const SendButton = styled.button<{ disabled: boolean }>`
   font-size: 13px;
 `;
 
+const ChartLink = styled.a`
+  display: inline-block;
+  margin-top: 4px;
+  padding: 6px 12px;
+  background: ${({ theme }) => theme.colorPrimaryBg};
+  color: ${({ theme }) => theme.colorPrimary};
+  border: 1px solid ${({ theme }) => theme.colorPrimaryBorder};
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover {
+    background: ${({ theme }) => theme.colorPrimaryBgHover};
+  }
+`;
+
+function extractChartUrl(text: string): {
+  chartId: number;
+  exploreUrl: string;
+} | null {
+  // Match explore URL with slice_id from the text
+  const match = text.match(
+    /\/explore\/\?(?:form_data_key=[^&]*&)?slice_id=(\d+)/,
+  );
+  if (match) {
+    return { chartId: parseInt(match[1], 10), exploreUrl: match[0] };
+  }
+  return null;
+}
+
+const AGENT_MODES = [
+  { label: 'SQL', value: 'nl2sql' },
+  { label: 'Chart', value: 'chart' },
+];
+
 export function AiChatPanel({
   databaseId,
   onSqlGenerated,
+  onChartCreated,
   onClose,
 }: AiChatPanelProps) {
+  const [agentType, setAgentType] = useState('nl2sql');
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { messages, loading, streamingText, sendMessage, clearMessages } =
-    useAiChat(databaseId);
+    useAiChat(databaseId, agentType);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -112,6 +161,14 @@ export function AiChatPanel({
   useEffect(() => {
     scrollToBottom();
   }, [messages, streamingText, scrollToBottom]);
+
+  const handleModeChange = (e: any) => {
+    const newMode = e.target.value;
+    if (newMode !== agentType) {
+      setAgentType(newMode);
+      clearMessages();
+    }
+  };
 
   const handleSend = () => {
     if (!inputValue.trim() || loading) return;
@@ -126,19 +183,53 @@ export function AiChatPanel({
     }
   };
 
+  const placeholder =
+    agentType === 'chart'
+      ? t('Describe the chart you want to create...')
+      : t('Ask a question about your data...');
+
   return (
     <PanelContainer>
       <Header>
-        <span>{t('AI Assistant')}</span>
+        <HeaderLeft>
+          <HeaderTitle>{t('AI Assistant')}</HeaderTitle>
+          <Radio.Group
+            optionType="button"
+            buttonStyle="solid"
+            size="small"
+            options={AGENT_MODES}
+            value={agentType}
+            onChange={handleModeChange}
+          />
+        </HeaderLeft>
         <CloseButton onClick={onClose}>✕</CloseButton>
       </Header>
       <MessagesContainer>
         {messages.map((msg, idx) => (
           <div key={idx}>
             <AiMessageBubble message={msg} />
-            {msg.role === 'assistant' && onSqlGenerated && (
+            {msg.role === 'assistant' && agentType === 'nl2sql' && (
               <AiSqlPreview sql={msg.content} onCopyToEditor={onSqlGenerated} />
             )}
+            {msg.role === 'assistant' && agentType === 'chart' && (() => {
+              const chartInfo = extractChartUrl(msg.content);
+              if (chartInfo && onChartCreated) {
+                return (
+                  <ChartLink
+                    href={chartInfo.exploreUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={e => {
+                      e.preventDefault();
+                      onChartCreated(chartInfo.chartId, chartInfo.exploreUrl);
+                    }}
+                  >
+                    {t('View Chart')} →
+                  </ChartLink>
+                );
+              }
+              return null;
+            })()}
           </div>
         ))}
         {loading && streamingText && <AiStreamingText text={streamingText} />}
@@ -152,7 +243,7 @@ export function AiChatPanel({
           value={inputValue}
           onChange={e => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={t('Ask a question about your data...')}
+          placeholder={placeholder}
           disabled={loading}
         />
         <SendButton onClick={handleSend} disabled={loading || !inputValue.trim()}>

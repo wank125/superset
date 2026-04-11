@@ -32,6 +32,7 @@ FEATURE_FLAGS = {
     "ALERT_REPORTS": True,
     "AI_AGENT": True,
     "AI_AGENT_NL2SQL": True,
+    "AI_AGENT_CHART": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ AI_LLM_DEFAULT_PROVIDER = "openai"
 AI_LLM_PROVIDERS = {
     "openai": {
         "api_key_env": "LM_STUDIO_API_KEY",
-        "model": "zai-org/glm-4.7-flash",
+        "model": "qwen/qwen3.5-35b-a3b",
         "temperature": 0.0,
         "max_tokens": 4096,
         "base_url": "http://host.docker.internal:1234/v1",

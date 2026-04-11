@@ -29,7 +29,7 @@ function createSessionId(): string {
   return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function useAiChat(databaseId: number) {
+export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
   const [messages, setMessages] = useState<AiChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
@@ -148,6 +148,7 @@ export function useAiChat(databaseId: number) {
         const { channel_id: channelId } = await sendChat({
           message,
           database_id: databaseId,
+          agent_type: agentType,
           session_id: sessionIdRef.current,
         });
         pollEvents(channelId, '0', 0);
@@ -163,13 +164,14 @@ export function useAiChat(databaseId: number) {
         setLoading(false);
       }
     },
-    [databaseId, loading, pollEvents],
+    [databaseId, agentType, loading, pollEvents],
   );
 
   const clearMessages = useCallback(() => {
     setMessages([]);
     streamingTextRef.current = '';
     setStreamingText('');
+    setLoading(false);
     stopPolling();
     // Reset session for a fresh conversation
     sessionIdRef.current = createSessionId();

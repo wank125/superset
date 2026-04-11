@@ -23,6 +23,7 @@ import logger from './logging';
 export enum FeatureFlag {
   // PLEASE KEEP THE LIST SORTED ALPHABETICALLY
   AI_AGENT = 'AI_AGENT',
+  AI_AGENT_CHART = 'AI_AGENT_CHART',
   AI_AGENT_NL2SQL = 'AI_AGENT_NL2SQL',
   AlertsAttachReports = 'ALERTS_ATTACH_REPORTS',
   AlertReports = 'ALERT_REPORTS',

@@ -69,6 +69,19 @@ class BaseAgent(ABC):
             for t in self._tools.values()
         ]
 
+    # Safeguard: max characters of text_chunk content before forcing stop
+    _MAX_STREAM_CHARS = 10000
+    # Safeguard: if a short text segment repeats this many times, stop
+    _MAX_REPETITIONS = 8
+
+    def _detect_repetition(self, accumulated: str) -> bool:
+        """Check whether accumulated text is stuck in a loop."""
+        if len(accumulated) < 200:
+            return False
+        # Check a short tail segment against the whole text
+        tail = accumulated[-30:]
+        return accumulated.count(tail) >= self._MAX_REPETITIONS
+
     def run(self, user_message: str) -> Iterator[AgentEvent]:
         """Execute the ReAct loop and yield events."""
         messages = [
@@ -86,6 +99,7 @@ class BaseAgent(ABC):
 
         assistant_content_parts: list[str] = []
         tool_defs = self._get_tool_defs() if self._tools else None
+        stream_chars = 0
 
         for _turn in range(self._max_turns):
             tool_calls_acc: list[dict[str, Any]] = []
@@ -94,10 +108,34 @@ class BaseAgent(ABC):
                 for chunk in self._provider.chat_stream(messages, tools=tool_defs):
                     if chunk.content:
                         assistant_content_parts.append(chunk.content)
+                        stream_chars += len(chunk.content)
                         yield AgentEvent(
                             type="text_chunk",
                             data={"content": chunk.content},
                         )
+                        # Guard against infinite text generation
+                        if stream_chars > self._MAX_STREAM_CHARS:
+                            yield AgentEvent(
+                                type="error",
+                                data={"message": "Response too long, stopped early."},
+                            )
+                            full_response = "".join(assistant_content_parts)
+                            self._context.add_message(
+                                "assistant", full_response[:self._MAX_STREAM_CHARS]
+                            )
+                            yield AgentEvent(type="done", data={})
+                            return
+                        if self._detect_repetition(
+                            "".join(assistant_content_parts)
+                        ):
+                            yield AgentEvent(
+                                type="error",
+                                data={"message": "Detected repetitive output, stopped."},
+                            )
+                            full_response = "".join(assistant_content_parts)
+                            self._context.add_message("assistant", full_response)
+                            yield AgentEvent(type="done", data={})
+                            return
                     if chunk.tool_calls:
                         tool_calls_acc.extend(
                             [

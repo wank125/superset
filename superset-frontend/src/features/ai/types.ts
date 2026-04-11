@@ -23,6 +23,7 @@ export type AgentEventType =
   | 'tool_call'
   | 'tool_result'
   | 'sql_generated'
+  | 'chart_created'
   | 'done'
   | 'error';
 

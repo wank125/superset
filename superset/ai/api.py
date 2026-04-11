@@ -97,6 +97,15 @@ class AiAgentRestApi(BaseSupersetApi):
         if errors:
             return self.response_400(message=str(errors))
 
+        # Enforce per-agent feature flags
+        agent_type = body.get("agent_type", "nl2sql")
+        if agent_type == "chart" and not is_feature_enabled(
+            "AI_AGENT_CHART"
+        ):
+            return self.response_400(
+                message="Chart agent is not enabled. Enable AI_AGENT_CHART feature flag."
+            )
+
         import uuid
 
         channel_id = uuid.uuid4().hex

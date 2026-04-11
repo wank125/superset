@@ -1136,6 +1136,9 @@ const SqlEditor: FC<Props> = ({
             dispatch(queryEditorSetSql(queryEditor, sql));
             setAiChatOpen(false);
           }}
+          onChartCreated={(_chartId: number, exploreUrl: string) => {
+            window.open(exploreUrl, '_blank');
+          }}
         />
       )}
     </StyledSqlEditor>

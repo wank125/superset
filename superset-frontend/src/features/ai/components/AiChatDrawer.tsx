@@ -25,6 +25,7 @@ interface AiChatDrawerProps {
   visible: boolean;
   onClose: () => void;
   onSqlGenerated: (sql: string) => void;
+  onChartCreated?: (chartId: number, exploreUrl: string) => void;
 }
 
 export default function AiChatDrawer({
@@ -32,6 +33,7 @@ export default function AiChatDrawer({
   visible,
   onClose,
   onSqlGenerated,
+  onChartCreated,
 }: AiChatDrawerProps) {
   return (
     <Drawer
@@ -47,6 +49,7 @@ export default function AiChatDrawer({
         databaseId={databaseId}
         onClose={onClose}
         onSqlGenerated={onSqlGenerated}
+        onChartCreated={onChartCreated}
       />
     </Drawer>
   );
