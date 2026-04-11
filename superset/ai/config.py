@@ -52,3 +52,8 @@ def get_max_context_rounds() -> int:
 def get_stream_channel_prefix() -> str:
     """Return the Redis stream channel prefix for AI events."""
     return str(get_ai_config("AI_AGENT_STREAM_CHANNEL_PREFIX", "ai-agent-"))
+
+
+def use_langchain() -> bool:
+    """Return True if the LangChain agent path should be used."""
+    return bool(get_ai_config("AI_AGENT_USE_LANGCHAIN", False))

@@ -45,7 +45,7 @@ AI_LLM_DEFAULT_PROVIDER = "openai"
 AI_LLM_PROVIDERS = {
     "openai": {
         "api_key_env": "LM_STUDIO_API_KEY",
-        "model": "glm-4.7-flash",
+        "model": "zai-org/glm-4.7-flash",
         "temperature": 0.0,
         "max_tokens": 4096,
         "base_url": "http://host.docker.internal:1234/v1",
@@ -55,6 +55,13 @@ AI_LLM_PROVIDERS = {
 AI_AGENT_MAX_TURNS = 10
 AI_AGENT_TIMEOUT = 120
 AI_AGENT_STREAM_CHANNEL_PREFIX = "ai-agent-"
+
+# ---------------------------------------------------------------------------
+# LangChain Integration (Phase 7)
+# Set to True to use LangChain/LangGraph agent path instead of legacy
+# hand-written ReAct loop.  Default is False for safe rollout.
+# ---------------------------------------------------------------------------
+AI_AGENT_USE_LANGCHAIN = True
 
 # ---------------------------------------------------------------------------
 # Celery: include AI agent task in imports

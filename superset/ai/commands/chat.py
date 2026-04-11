@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 from superset.ai.agent.context import ConversationContext
 from superset.ai.agent.chart_agent import ChartAgent
 from superset.ai.agent.dashboard_agent import DashboardAgent
 from superset.ai.agent.debug_agent import DebugAgent
+from superset.ai.agent.events import AgentEvent
 from superset.ai.agent.nl2sql_agent import NL2SQLAgent
 from superset.ai.config import get_agent_timeout
 from superset.ai.llm.registry import get_provider
@@ -97,3 +99,48 @@ class AiChatCommand(BaseCommand):
     @property
     def channel_id(self) -> str:
         return self._channel_id
+
+
+class LegacyAgentRunner:
+    """Wraps the existing (pre-LangChain) agent instantiation logic.
+
+    Provides the same ``run(message) -> Iterator[AgentEvent]`` interface
+    as ``LangChainAgentRunner``, so ``runner.py`` can dispatch uniformly.
+    """
+
+    def __init__(
+        self,
+        agent_type: str,
+        database_id: int,
+        schema_name: str | None,
+        user_id: int,
+        session_id: str,
+    ) -> None:
+        self._agent_type = agent_type
+        self._database_id = database_id
+        self._schema_name = schema_name
+        self._user_id = user_id
+        self._session_id = session_id
+
+    def run(self, message: str) -> Iterator[AgentEvent]:
+        agent_cls = _AGENT_MAP.get(self._agent_type)
+        if agent_cls is None:
+            raise ValueError(f"Unknown agent type: {self._agent_type}")
+
+        # NOTE: Do NOT call override_user here.  The caller (tasks.py)
+        # already sets g.user to the loaded Flask-AppBuilder User object
+        # via override_user(user).  Re-overriding with an int would
+        # break permission checks in tools (can_access, can_write, etc.)
+        # that expect g.user to be a User instance, not an int.
+        provider = get_provider()
+        context = ConversationContext(
+            user_id=self._user_id,
+            session_id=self._session_id,
+        )
+        agent = agent_cls(
+            provider=provider,
+            context=context,
+            database_id=self._database_id,
+            schema_name=self._schema_name,
+        )
+        yield from agent.run(message)
