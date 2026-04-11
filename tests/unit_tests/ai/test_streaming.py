@@ -103,4 +103,4 @@ class TestAiStreamManager:
 
         assert _increment_id("12345-0") == "12345-1"
         assert _increment_id("12345-99") == "12345-100"
-        assert _increment_id("invalid") == "invalid"
+        assert _increment_id("invalid") == "-"

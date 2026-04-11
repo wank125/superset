@@ -10,6 +10,10 @@ amqp==5.3.1
     # via
     #   -c requirements/base.txt
     #   kombu
+anyio==4.13.0
+    # via
+    #   -c requirements/base.txt
+    #   httpx
 apispec==6.6.1
     # via
     #   -c requirements/base.txt
@@ -77,6 +81,8 @@ celery==5.5.2
 certifi==2025.6.15
     # via
     #   -c requirements/base.txt
+    #   httpcore
+    #   httpx
     #   requests
     #   selenium
 cffi==1.17.1
@@ -313,7 +319,6 @@ greenlet==3.1.1
     #   apache-superset
     #   gevent
     #   shillelagh
-    #   sqlalchemy
 grpcio==1.71.0
     # via
     #   apache-superset
@@ -328,6 +333,7 @@ gunicorn==23.0.0
 h11==0.16.0
     # via
     #   -c requirements/base.txt
+    #   httpcore
     #   wsproto
 hashids==1.3.1
     # via
@@ -338,6 +344,14 @@ holidays==0.82
     #   -c requirements/base.txt
     #   apache-superset
     #   prophet
+httpcore==1.0.9
+    # via
+    #   -c requirements/base.txt
+    #   httpx
+httpx==0.28.1
+    # via
+    #   -c requirements/base.txt
+    #   apache-superset
 humanize==4.12.3
     # via
     #   -c requirements/base.txt
@@ -347,7 +361,9 @@ identify==2.5.36
 idna==3.10
     # via
     #   -c requirements/base.txt
+    #   anyio
     #   email-validator
+    #   httpx
     #   requests
     #   trio
     #   url-normalize
@@ -840,6 +856,7 @@ typing-extensions==4.14.0
     # via
     #   -c requirements/base.txt
     #   alembic
+    #   anyio
     #   apache-superset
     #   cattrs
     #   limits

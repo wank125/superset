@@ -105,7 +105,7 @@ class TestGetSchemaTool:
     def test_returns_error_for_missing_database(self, mock_dao):
         from superset.ai.tools.get_schema import GetSchemaTool
 
-        mock_dao.get_database.return_value = None
+        mock_dao.find_by_id.return_value = None
         tool = GetSchemaTool(database_id=999)
         result = tool.run({})
         assert "not found" in result
@@ -115,7 +115,7 @@ class TestGetSchemaTool:
     def test_fetches_table_metadata(self, mock_dao, mock_sm):
         from superset.ai.tools.get_schema import GetSchemaTool
 
-        mock_sm.can_access_database.return_value = True
+        mock_sm.can_access_database = MagicMock(return_value=True)
         mock_db = MagicMock()
         mock_db.database_name = "test_db"
 
@@ -134,7 +134,7 @@ class TestGetSchemaTool:
                 pass
 
         mock_db.get_inspector.return_value = FakeCtxMgr()
-        mock_dao.get_database.return_value = mock_db
+        mock_dao.find_by_id.return_value = mock_db
 
         tool = GetSchemaTool(database_id=1)
         result = tool.run({"schema_name": "public"})

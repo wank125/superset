@@ -44,8 +44,8 @@ superset/ai/
 │   ├── get_schema.py         # 获取数据库 Schema
 │   ├── create_chart.py       # 创建图表
 │   ├── create_dashboard.py   # 创建仪表板
-│   ├── fix_error.py          # 诊断修复错误
-│   ├── embed_dashboard.py    # 生成嵌入式链接
+│   ├── fix_error.py          # 规划中：诊断修复错误
+│   ├── embed_dashboard.py    # 规划中：生成嵌入式链接
 │   └── search_datasets.py    # 搜索数据集
 │
 ├── prompts/                  # Prompt 模板
@@ -184,8 +184,8 @@ class BaseAgent(ABC):
 | `get_schema` | 获取数据库表/列元数据 | `DatabaseDAO` + `SqlaTable.columns` |
 | `create_chart` | 创建图表 | `CreateChartCommand` (`superset/commands/chart/create.py`) |
 | `create_dashboard` | 创建仪表板 | `CreateDashboardCommand` (`superset/commands/dashboard/create.py`) |
-| `fix_error` | 诊断并修复错误 | `db_engine_spec.extract_errors()` + `SupersetErrorType` |
-| `embed_dashboard` | 生成嵌入式链接 | `EmbeddedDashboardDAO` |
+| `fix_error` | 规划中：诊断并修复错误 | 当前 Phase 3 复用 `DebugAgent` + `execute_sql` 完成 SQL 修复 |
+| `embed_dashboard` | 规划中：生成嵌入式链接 | 当前 Phase 4 仅返回普通 dashboard 链接 |
 | `search_datasets` | 搜索数据集 | `DatasetDAO` |
 
 每个工具继承 `BaseTool`，定义 `name`、`description`、`parameters_schema`（JSON Schema，供 LLM function calling 使用）。工具执行继承当前用户的权限。
@@ -305,17 +305,19 @@ Frontend Polling
 
 ### Phase 3: 自动排错
 
-**新增：** `debug_agent.py`, `fix_error.py`, `debug.py`
+**新增：** `debug_agent.py`, `debug.py`
 
-**集成点：** `sql_lab.py:handle_query_error()` — 错误时展示 "AI Fix" 按钮
+**集成点：** SQL Lab `ResultSet` — 查询错误时展示 "AI Fix" 按钮
 
-**修复闭环：** 读取错误 → extract_errors() → 分析根因 → 修复 SQL/配置 → 重跑
+**修复闭环：** 读取错误上下文 → 查询 Schema → 生成修复 SQL → 使用 `execute_sql` 验证 → 用户应用修复 SQL
 
 ### Phase 4: 一句话建仪表板 + 交付
 
-**新增：** `dashboard_agent.py`, `create_dashboard.py`, `embed_dashboard.py`, `dashboard_creation.py`
+**新增：** `dashboard_agent.py`, `create_dashboard.py`, `dashboard_creation.py`
 
-**交付链：** 自然语言 → 多图表 → 组装 position_json → 创建 Dashboard → 嵌入式配置 → 返回 `/embedded/<uuid>` 公网链接
+**已实现链路：** 自然语言 → 多图表 → 组装 `position_json` → 创建 Dashboard → 返回 `/superset/dashboard/<id>/` 链接
+
+**待实现：** 嵌入式交付链路（`embed_dashboard.py`、嵌入式配置、`/embedded/<uuid>` 链接）尚未完成。
 
 ---
 

@@ -1,8 +1,9 @@
 # Phase 2: 一句话建图表 — 详细设计文档
 
-> 状态：设计阶段
+> 状态：已实现
 > 前置依赖：Phase 1 (NL2SQL) 已完成
 > 目标：用户输入自然语言 → Agent 自动创建图表 → 返回 Explore URL
+> 更新：`ChartAgent`、`SearchDatasetsTool`、`CreateChartTool`、前端模式切换和 `AI_AGENT_CHART` Feature Flag 已落地。
 
 ---
 
@@ -630,52 +631,52 @@ curl -X POST /api/v1/ai/chat/ \
 
 ---
 
-## 九、实施步骤
+## 九、实施结果
 
-### Step 1: 创建 SearchDatasetsTool (约 1 小时)
+### Step 1: 创建 SearchDatasetsTool
 
-- 创建 `superset/ai/tools/search_datasets.py`
-- 实现 `SqlaTable` 查询逻辑
-- 处理未找到数据集的情况（返回可用列表）
+- 已创建 `superset/ai/tools/search_datasets.py`
+- 已实现 `SqlaTable` 查询逻辑
+- 已处理未找到数据集的情况（返回可用列表）
 
-### Step 2: 创建 CreateChartTool (约 1.5 小时)
+### Step 2: 创建 CreateChartTool
 
-- 创建 `superset/ai/tools/create_chart.py`
-- 集成 `CreateChartCommand`
-- 构造 form_data 并创建图表
-- 返回 explore_url
+- 已创建 `superset/ai/tools/create_chart.py`
+- 已集成 `CreateChartCommand`
+- 已构造 form_data 并创建图表
+- 已返回 explore_url
 
-### Step 3: 编写 Chart Creation Prompt (约 1 小时)
+### Step 3: 编写 Chart Creation Prompt
 
-- 创建 `superset/ai/prompts/chart_creation.py`
-- 包含完整的 viz_type 选择指南
-- 包含 form_data 参数示例
+- 已创建 `superset/ai/prompts/chart_creation.py`
+- 已包含 viz_type 选择指南
+- 已包含 form_data 参数示例
 
-### Step 4: 创建 ChartAgent (约 0.5 小时)
+### Step 4: 创建 ChartAgent
 
-- 创建 `superset/ai/agent/chart_agent.py`
-- 组合 4 个工具（get_schema + execute_sql + search_datasets + create_chart）
-- 注册到 `_AGENT_MAP`
+- 已创建 `superset/ai/agent/chart_agent.py`
+- 已组合 4 个工具（get_schema + execute_sql + search_datasets + create_chart）
+- 已注册到 `_AGENT_MAP`
 
-### Step 5: 更新 Schema 和 Config (约 0.5 小时)
+### Step 5: 更新 Schema 和 Config
 
-- 修改 `schemas.py` 添加 `"chart"` agent_type
-- 添加 `AI_AGENT_CHART` Feature Flag
-- 更新 Celery task 导入
+- 已修改 `schemas.py` 添加 `"chart"` agent_type
+- 已添加 `AI_AGENT_CHART` Feature Flag
+- 已更新 Celery task 导入
 
-### Step 6: 前端扩展 (约 1 小时)
+### Step 6: 前端扩展
 
-- 扩展 `AgentEventType` 添加 `chart_created`
-- 在 `AiChatPanel` 中处理图表创建事件
-- 显示可点击的图表链接卡片
+- 已扩展 `AgentEventType` 添加 `chart_created`
+- 已在 `AiChatPanel` 中处理图表创建结果
+- 已显示可点击的图表链接
 
-### Step 7: 测试和调优 (约 1 小时)
+### Step 7: 测试和调优
 
-- API 测试（柱状图、饼图、折线图）
-- Web UI 测试（Playwright MCP）
-- Prompt 调优（根据实际 LLM 输出质量调整）
+- 已通过 Docker Compose + LM Studio 进行 API 和 Web UI 验证
+- 已根据实际 LLM 输出调整 Prompt
+- 待补充更细粒度的单元测试覆盖
 
-**总计预估：约 6.5 小时**
+**当前缺口：** 独立的 `ChartAgent` / `CreateChartTool` / `SearchDatasetsTool` 单元测试尚未按测试计划完全补齐。
 
 ---
 

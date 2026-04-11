@@ -505,6 +505,9 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     # AI Agent feature flags (all disabled by default)
     "AI_AGENT": False,
     "AI_AGENT_NL2SQL": False,
+    "AI_AGENT_CHART": False,
+    "AI_AGENT_DEBUG": False,
+    "AI_AGENT_DASHBOARD": False,
     # Allow for javascript controls components
     # this enables programmers to customize certain charts (like the
     # geospatial ones) by inputting javascript in controls. This exposes

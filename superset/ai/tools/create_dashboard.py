@@ -108,8 +108,8 @@ class CreateDashboardTool(BaseTool):
                 )
                 if table and not security_manager.can_access_datasource(table):
                     inaccessible.append(sid)
-            except Exception:
-                pass  # If check fails, allow (best-effort)
+            except Exception as ex:
+                return f"Error: Unable to verify access for chart ID {sid}: {ex}"
             slices.append(sl)
 
         if inaccessible:

@@ -3,6 +3,7 @@
 > 状态：已完成并通过测试
 > 测试环境：Docker Compose + LM Studio (GLM-4.7-Flash)
 > 测试时间：2026-04-11
+> 更新：`httpx` 已加入正式依赖，Docker 和干净安装环境均可导入 LLM Provider。
 
 ---
 
@@ -378,7 +379,7 @@ curl -X POST http://localhost:8088/api/v1/ai/chat/ \
 
 | 问题 | 根因 | 修复 |
 |------|------|------|
-| `httpx ModuleNotFoundError` | httpx 不在 Superset 依赖中 | Docker 容器内 `pip install httpx` |
+| `httpx ModuleNotFoundError` | httpx 不在 Superset 依赖中 | 已加入项目依赖和锁定文件 |
 | GetSchemaTool 查询 information_schema | PostgreSQL 默认返回第一个 schema | 优先选择 `public` schema |
 | schema_name 未传递给工具 | NL2SQLAgent 存储但未传递 | 添加 `default_schema` 参数 |
 | LLM 猜测表名失败 | get_schema 未提供可用表列表 | 表不存在时返回可用表列表 |
@@ -390,9 +391,8 @@ curl -X POST http://localhost:8088/api/v1/ai/chat/ \
 
 ## 八、已知限制
 
-1. **httpx 依赖** — 当前通过容器内手动安装，需正式添加到 `requirements/`
-2. **Anthropic/Ollama 提供商** — 仅有骨架代码，未完整实现
-3. **对话历史** — 仅保存在 Redis 内存中（TTL 1 小时），重启丢失
-4. **无审计日志** — 未记录用户交互和工具调用
-5. **无速率限制** — 未实现 `AI_AGENT_RATE_LIMIT` 配置项
-6. **仅支持 SQL Lab** — 尚未集成到其他页面
+1. **Anthropic/Ollama 提供商** — 仅有骨架代码，未完整实现
+2. **对话历史** — 仅保存在 Redis 内存中（TTL 1 小时），重启丢失
+3. **无审计日志** — 未记录用户交互和工具调用
+4. **无速率限制** — 未实现 `AI_AGENT_RATE_LIMIT` 配置项
+5. **仅支持 SQL Lab** — 尚未集成到其他页面
