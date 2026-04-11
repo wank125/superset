@@ -1,5 +1,4 @@
 # Minimal Superset compose for AI Agent testing (Docker Compose v2.6 compatible)
-version: "3.8"
 
 x-superset-volumes: &superset-volumes
   - ./docker:/app/docker
@@ -77,6 +76,12 @@ services:
     volumes: *superset-volumes
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME",
+        ]
 
   superset-worker-beat:
     build: *common-build
@@ -87,6 +92,8 @@ services:
       - superset-worker
     user: root
     volumes: *superset-volumes
+    healthcheck:
+      disable: true
 
   superset-node:
     build:
