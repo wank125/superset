@@ -1032,6 +1032,9 @@ const SqlEditor: FC<Props> = ({
           height={southPaneHeight}
           displayLimit={displayLimit}
           defaultQueryLimit={defaultQueryLimit}
+          onApplySql={(sql: string) => {
+            dispatch(queryEditorSetSql(queryEditor, sql));
+          }}
         />
       </Split>
     );

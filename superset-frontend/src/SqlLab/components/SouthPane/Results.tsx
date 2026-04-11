@@ -32,6 +32,7 @@ type Props = {
   height: number;
   displayLimit: number;
   defaultQueryLimit: number;
+  onApplySql?: (sql: string) => void;
 };
 
 const StyledEmptyStateWrapper = styled.div`
@@ -50,6 +51,7 @@ const Results: FC<Props> = ({
   height,
   displayLimit,
   defaultQueryLimit,
+  onApplySql,
 }) => {
   const databases = useSelector(
     ({ sqlLab: { databases } }: SqlLabRootState) => databases,
@@ -98,6 +100,7 @@ const Results: FC<Props> = ({
       defaultQueryLimit={defaultQueryLimit}
       showSql
       showSqlInline
+      onApplySql={onApplySql}
     />
   );
 };

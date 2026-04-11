@@ -105,6 +105,12 @@ class AiAgentRestApi(BaseSupersetApi):
             return self.response_400(
                 message="Chart agent is not enabled. Enable AI_AGENT_CHART feature flag."
             )
+        if agent_type == "debug" and not is_feature_enabled(
+            "AI_AGENT_DEBUG"
+        ):
+            return self.response_400(
+                message="Debug agent is not enabled. Enable AI_AGENT_DEBUG feature flag."
+            )
 
         import uuid
 

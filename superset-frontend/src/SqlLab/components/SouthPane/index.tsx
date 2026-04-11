@@ -49,6 +49,7 @@ export interface SouthPaneProps {
   height: number;
   displayLimit: number;
   defaultQueryLimit: number;
+  onApplySql?: (sql: string) => void;
 }
 
 type StyledPaneProps = {
@@ -96,6 +97,7 @@ const SouthPane = ({
   height,
   displayLimit,
   defaultQueryLimit,
+  onApplySql,
 }: SouthPaneProps) => {
   const { id, tabViewId } = useQueryEditor(queryEditorId, ['tabViewId']);
   const editorId = tabViewId ?? id;
@@ -163,6 +165,7 @@ const SouthPane = ({
           latestQueryId={latestQueryId}
           displayLimit={displayLimit}
           defaultQueryLimit={defaultQueryLimit}
+          onApplySql={onApplySql}
         />
       ),
       closable: false,

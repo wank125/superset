@@ -24,6 +24,7 @@ from typing import Any
 
 from superset.ai.agent.context import ConversationContext
 from superset.ai.agent.chart_agent import ChartAgent
+from superset.ai.agent.debug_agent import DebugAgent
 from superset.ai.agent.nl2sql_agent import NL2SQLAgent
 from superset.ai.config import get_agent_timeout
 from superset.ai.llm.registry import get_provider
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 _AGENT_MAP: dict[str, type] = {
     "nl2sql": NL2SQLAgent,
     "chart": ChartAgent,
+    "debug": DebugAgent,
 }
 
 

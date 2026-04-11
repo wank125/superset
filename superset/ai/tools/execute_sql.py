@@ -119,4 +119,19 @@ class ExecuteSqlTool(BaseTool):
 
         except Exception as exc:
             logger.exception("SQL execution failed")
-            return f"Error executing SQL: {exc}"
+            error_msg = str(exc)
+            # Enrich the error with structured information from the DB engine spec
+            try:
+                errors = database.db_engine_spec.extract_errors(exc)
+                if errors:
+                    err = errors[0]
+                    error_type = str(err.error_type)
+                    parts = [f"SQL Error [{error_type}]: {err.message}"]
+                    if err.extra and "issue_codes" in err.extra:
+                        codes = err.extra["issue_codes"]
+                        if codes and isinstance(codes, list) and codes[0].get("message"):
+                            parts.append(f"Suggestion: {codes[0]['message']}")
+                    return "\n".join(parts)
+            except Exception:
+                pass
+            return f"Error executing SQL: {error_msg}"

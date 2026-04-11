@@ -27,7 +27,7 @@ class AiChatPostSchema(Schema):
     schema_name = fields.String(load_default=None)
     agent_type = fields.String(
         load_default="nl2sql",
-        validate=validate.OneOf(["nl2sql", "chart"]),
+        validate=validate.OneOf(["nl2sql", "chart", "debug"]),
     )
     session_id = fields.String(load_default=None)
 
