@@ -33,6 +33,16 @@ _AGENT_PROMPT_BUILDERS: dict[str, type] = {
     "dashboard": DashboardAgent,
 }
 
+_NL2SQL_EXECUTION_RULE = """
+
+Execution rule:
+- For every user request that asks for database data, tables, counts, rows,
+  metrics, or SQL results, call execute_sql in the current turn.
+- Do not answer from previous conversation history, cached results, or memory.
+- Even if the same question was answered earlier, execute SQL again before
+  giving the answer.
+"""
+
 
 def prompt_adapter(
     agent_type: str,
@@ -60,6 +70,8 @@ def prompt_adapter(
     agent._schema_name = schema_name
 
     system_text = agent.get_system_prompt()
+    if agent_type == "nl2sql":
+        system_text += _NL2SQL_EXECUTION_RULE
 
     # Use a static SystemMessage (no variable interpolation) + a
     # MessagesPlaceholder for the conversation history.  This avoids

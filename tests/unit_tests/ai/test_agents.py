@@ -18,8 +18,8 @@
 
 from unittest.mock import MagicMock, patch
 
-from superset.ai.agent.events import AgentEvent
-from superset.ai.llm.types import LLMMessage, LLMStreamChunk, ToolCall
+from superset.ai.llm.types import LLMStreamChunk, ToolCall
+from superset.utils import json
 
 
 class TestBaseAgent:
@@ -68,7 +68,10 @@ class TestBaseAgent:
         class EchoTool(BaseTool):
             name = "echo"
             description = "Echo input"
-            parameters_schema = {"type": "object", "properties": {"text": {"type": "string"}}}
+            parameters_schema = {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+            }
 
             def run(self, arguments):
                 return f"Echo: {arguments.get('text', '')}"
@@ -147,7 +150,6 @@ class TestConversationContext:
 
         ctx.add_message("user", "hello")
         call_args = mock_cache.cache.set.call_args
-        import json
         stored = json.loads(call_args[0][1])
         assert len(stored) == 1
         assert stored[0]["role"] == "user"
@@ -156,7 +158,6 @@ class TestConversationContext:
     @patch("superset.ai.agent.context.get_max_context_rounds", return_value=2)
     def test_history_truncation(self, mock_rounds, mock_cache):
         from superset.ai.agent.context import ConversationContext
-        import json
 
         # Simulate Redis: cache.get returns the last value set by cache.set
         store: dict[str, str] = {}
@@ -187,3 +188,37 @@ class TestConversationContext:
         ctx = ConversationContext(user_id=1, session_id="s1")
         ctx.clear()
         mock_cache.cache.delete.assert_called_once()
+
+
+class TestToolCallRepetitionGuard:
+    """Tests for LangChain tool repetition guard."""
+
+    def test_untracked_tool_is_not_limited(self):
+        from superset.ai.agent.langchain.guard import ToolCallRepetitionGuard
+
+        guard = ToolCallRepetitionGuard(
+            max_consecutive=3,
+            tracked_tools={"create_chart", "create_dashboard"},
+        )
+
+        assert not guard.check("execute_sql", {"sql": "select 1"})
+        assert not guard.check("execute_sql", {"sql": "select 1"})
+        assert not guard.check("execute_sql", {"sql": "select 1"})
+
+    def test_tracked_tool_repeats_only_with_same_arguments(self):
+        from superset.ai.agent.langchain.guard import ToolCallRepetitionGuard
+
+        guard = ToolCallRepetitionGuard(
+            max_consecutive=3,
+            tracked_tools={"create_chart"},
+        )
+
+        assert not guard.check("create_chart", {"chart_type": "bar"})
+        assert not guard.check("create_chart", {"chart_type": "line"})
+        assert not guard.check("create_chart", {"chart_type": "bar"})
+
+        guard.reset()
+
+        assert not guard.check("create_chart", {"chart_type": "bar"})
+        assert not guard.check("create_chart", {"chart_type": "bar"})
+        assert guard.check("create_chart", {"chart_type": "bar"})

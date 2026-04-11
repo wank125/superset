@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from superset.ai.agent.events import AgentEvent
 from superset.ai.config import use_langchain
@@ -33,6 +33,15 @@ class AgentRunner:
 
     def run(self, message: str) -> Iterator[AgentEvent]:
         raise NotImplementedError
+
+    def set_user(self, user: Any) -> None:
+        """Store the Flask-AppBuilder User object for permission checks.
+
+        Called by tasks.py after creating the runner.  The runner wraps
+        ``run()`` with ``override_user(user)`` so tools like get_schema,
+        create_chart, etc. can access ``g.user`` correctly.
+        """
+        self._user = user
 
 
 def create_agent_runner(

@@ -18,9 +18,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
@@ -34,6 +34,7 @@ from superset.ai.agent.langchain.memory import LangChainMemoryAdapter
 from superset.ai.agent.langchain.prompts import prompt_adapter
 from superset.ai.agent.langchain.tools import tool_adapter
 from superset.ai.config import get_max_turns
+from superset.ai.runner import AgentRunner
 from superset.ai.tools.analyze_data import AnalyzeDataTool
 from superset.ai.tools.base import BaseTool
 from superset.ai.tools.create_chart import CreateChartTool
@@ -41,6 +42,13 @@ from superset.ai.tools.create_dashboard import CreateDashboardTool
 from superset.ai.tools.execute_sql import ExecuteSqlTool
 from superset.ai.tools.get_schema import GetSchemaTool
 from superset.ai.tools.search_datasets import SearchDatasetsTool
+
+
+@contextmanager
+def _nullcontext() -> Iterator[None]:
+    """Minimal no-op context manager for when no user override is needed."""
+    yield None
+
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +100,7 @@ def _instantiate_tools(
     return tools
 
 
-class LangChainAgentRunner:
+class LangChainAgentRunner(AgentRunner):
     """Run an agent using LangGraph's create_react_agent.
 
     Provides the same ``run(message) -> Iterator[AgentEvent]`` interface
@@ -112,14 +120,30 @@ class LangChainAgentRunner:
         self._schema_name = schema_name
         self._user_id = user_id
         self._session_id = session_id
-        self._tool_guard = ToolCallRepetitionGuard(max_consecutive=3)
+        self._tool_guard = ToolCallRepetitionGuard(
+            max_consecutive=3,
+            tracked_tools={"create_chart", "create_dashboard"},
+        )
         self._content_parts: list[str] = []
 
     def run(self, message: str) -> Iterator[AgentEvent]:
         """Execute the agent and yield AgentEvent instances."""
+        from superset.utils.core import override_user
+
         self._tool_guard.reset()
         self._content_parts = []
 
+        # Use override_user if a User object was provided via set_user().
+        # This ensures g.user is a proper User instance for permission
+        # checks inside tools (get_schema, create_chart, etc.).
+        user = getattr(self, "_user", None)
+        ctx = override_user(user) if user else _nullcontext()
+
+        with ctx:
+            yield from self._run_inner(message)
+
+    def _run_inner(self, message: str) -> Iterator[AgentEvent]:
+        """Inner execution logic, called inside the override_user context."""
         llm = get_langchain_llm()
         native_tools = _instantiate_tools(
             self._agent_type, self._database_id, self._schema_name
@@ -148,8 +172,9 @@ class LangChainAgentRunner:
             # stream_mode=["messages", "updates"]:
             #   "messages" → (AIMessageChunk, metadata) for text tokens
             #   "updates"  → complete tool call/result snapshots
+            include_history = self._agent_type != "nl2sql"
             for mode, chunk in agent.stream(
-                {"messages": memory.get_messages()},
+                {"messages": memory.get_messages(include_history=include_history)},
                 config=config,
                 stream_mode=["messages", "updates"],
             ):
@@ -221,8 +246,9 @@ class LangChainAgentRunner:
                         tool_name = tc_chunk["name"]
                         args = tc_chunk.get("args", {})
 
-                        # Single-tool forcing: skip if multiple
-                        if self._tool_guard.check(tool_name):
+                        # Only guard side-effecting tools here. Read tools like
+                        # execute_sql may be called repeatedly in one session.
+                        if self._tool_guard.check(tool_name, args):
                             logger.warning(
                                 "Tool '%s' called %d times consecutively, "
                                 "injecting correction",

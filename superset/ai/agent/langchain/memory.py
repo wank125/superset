@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from langchain_core.messages import (
     AIMessage,
@@ -47,9 +46,12 @@ class LangChainMemoryAdapter:
     def __init__(self, user_id: int, session_id: str) -> None:
         self._ctx = ConversationContext(user_id=user_id, session_id=session_id)
 
-    def get_messages(self) -> list[BaseMessage]:
+    def get_messages(self, include_history: bool = True) -> list[BaseMessage]:
         """Load history from Redis and convert to LangChain messages."""
         history = self._ctx.get_history()
+        if not include_history:
+            history = history[-1:]
+
         messages: list[BaseMessage] = []
         for entry in history:
             role = entry.get("role", "")

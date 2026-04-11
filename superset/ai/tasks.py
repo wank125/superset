@@ -67,6 +67,11 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 user_id=user_id,
                 session_id=session_id,
             )
+            # The runner may need the User object for permission checks
+            # inside tools (get_schema, create_chart, etc.).  Store it
+            # on the runner so it can set up override_user internally.
+            if hasattr(runner, "set_user"):
+                runner.set_user(user)
             for event in runner.run(message):
                 stream.publish_event(channel_id, event)
     except Exception as exc:

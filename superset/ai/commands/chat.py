@@ -31,6 +31,7 @@ from superset.ai.agent.events import AgentEvent
 from superset.ai.agent.nl2sql_agent import NL2SQLAgent
 from superset.ai.config import get_agent_timeout
 from superset.ai.llm.registry import get_provider
+from superset.ai.runner import AgentRunner
 from superset.ai.streaming.manager import AiStreamManager
 from superset.commands.base import BaseCommand
 from superset.utils.core import override_user
@@ -101,7 +102,7 @@ class AiChatCommand(BaseCommand):
         return self._channel_id
 
 
-class LegacyAgentRunner:
+class LegacyAgentRunner(AgentRunner):
     """Wraps the existing (pre-LangChain) agent instantiation logic.
 
     Provides the same ``run(message) -> Iterator[AgentEvent]`` interface
