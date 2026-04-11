@@ -28,6 +28,7 @@ EventType = Literal[
     "tool_result",
     "sql_generated",
     "chart_created",
+    "dashboard_created",
     "error_fixed",
     "done",
     "error",

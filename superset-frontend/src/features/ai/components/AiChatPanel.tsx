@@ -29,6 +29,7 @@ interface AiChatPanelProps {
   databaseId: number;
   onSqlGenerated?: (sql: string) => void;
   onChartCreated?: (chartId: number, exploreUrl: string) => void;
+  onDashboardCreated?: (dashboardId: number, dashboardUrl: string) => void;
   visible?: boolean;
   onClose: () => void;
 }
@@ -137,15 +138,28 @@ function extractChartUrl(text: string): {
   return null;
 }
 
+function extractDashboardUrl(text: string): {
+  dashboardId: number;
+  dashboardUrl: string;
+} | null {
+  const match = text.match(/\/superset\/dashboard\/(\d+)/);
+  if (match) {
+    return { dashboardId: parseInt(match[1], 10), dashboardUrl: match[0] };
+  }
+  return null;
+}
+
 const AGENT_MODES = [
   { label: 'SQL', value: 'nl2sql' },
   { label: 'Chart', value: 'chart' },
+  { label: 'Dashboard', value: 'dashboard' },
 ];
 
 export function AiChatPanel({
   databaseId,
   onSqlGenerated,
   onChartCreated,
+  onDashboardCreated,
   onClose,
 }: AiChatPanelProps) {
   const [agentType, setAgentType] = useState('nl2sql');
@@ -184,9 +198,11 @@ export function AiChatPanel({
   };
 
   const placeholder =
-    agentType === 'chart'
-      ? t('Describe the chart you want to create...')
-      : t('Ask a question about your data...');
+    agentType === 'dashboard'
+      ? t('Describe the dashboard you want to create...')
+      : agentType === 'chart'
+        ? t('Describe the chart you want to create...')
+        : t('Ask a question about your data...');
 
   return (
     <PanelContainer>
@@ -225,6 +241,25 @@ export function AiChatPanel({
                     }}
                   >
                     {t('View Chart')} →
+                  </ChartLink>
+                );
+              }
+              return null;
+            })()}
+            {msg.role === 'assistant' && agentType === 'dashboard' && (() => {
+              const dashInfo = extractDashboardUrl(msg.content);
+              if (dashInfo && onDashboardCreated) {
+                return (
+                  <ChartLink
+                    href={dashInfo.dashboardUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={e => {
+                      e.preventDefault();
+                      onDashboardCreated(dashInfo.dashboardId, dashInfo.dashboardUrl);
+                    }}
+                  >
+                    {t('View Dashboard')} →
                   </ChartLink>
                 );
               }

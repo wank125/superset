@@ -34,6 +34,7 @@ FEATURE_FLAGS = {
     "AI_AGENT_NL2SQL": True,
     "AI_AGENT_CHART": True,
     "AI_AGENT_DEBUG": True,
+    "AI_AGENT_DASHBOARD": True,
 }
 
 # ---------------------------------------------------------------------------

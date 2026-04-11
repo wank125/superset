@@ -111,6 +111,12 @@ class AiAgentRestApi(BaseSupersetApi):
             return self.response_400(
                 message="Debug agent is not enabled. Enable AI_AGENT_DEBUG feature flag."
             )
+        if agent_type == "dashboard" and not is_feature_enabled(
+            "AI_AGENT_DASHBOARD"
+        ):
+            return self.response_400(
+                message="Dashboard agent is not enabled. Enable AI_AGENT_DASHBOARD feature flag."
+            )
 
         import uuid
 

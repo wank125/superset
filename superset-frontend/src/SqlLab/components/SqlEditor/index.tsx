@@ -1142,6 +1142,9 @@ const SqlEditor: FC<Props> = ({
           onChartCreated={(_chartId: number, exploreUrl: string) => {
             window.open(exploreUrl, '_blank');
           }}
+          onDashboardCreated={(_dashboardId: number, dashboardUrl: string) => {
+            window.open(dashboardUrl, '_blank');
+          }}
         />
       )}
     </StyledSqlEditor>
