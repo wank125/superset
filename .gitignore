@@ -134,3 +134,6 @@ CLAUDE.local.md
 .claude_rc*
 .env.local
 PROJECT.md
+
+# Playwright MCP session data
+.playwright-mcp/

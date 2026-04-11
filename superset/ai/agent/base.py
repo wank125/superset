@@ -99,21 +99,25 @@ class BaseAgent(ABC):
 
         assistant_content_parts: list[str] = []
         tool_defs = self._get_tool_defs() if self._tools else None
-        stream_chars = 0
 
         for _turn in range(self._max_turns):
             tool_calls_acc: list[dict[str, Any]] = []
+            # Reset per-turn accumulators so repetition detection and char
+            # limits apply to a single LLM response, not the whole conversation.
+            turn_content_parts: list[str] = []
+            stream_chars = 0
 
             try:
                 for chunk in self._provider.chat_stream(messages, tools=tool_defs):
                     if chunk.content:
+                        turn_content_parts.append(chunk.content)
                         assistant_content_parts.append(chunk.content)
                         stream_chars += len(chunk.content)
                         yield AgentEvent(
                             type="text_chunk",
                             data={"content": chunk.content},
                         )
-                        # Guard against infinite text generation
+                        # Guard against infinite text generation (per-turn)
                         if stream_chars > self._MAX_STREAM_CHARS:
                             yield AgentEvent(
                                 type="error",
@@ -126,7 +130,7 @@ class BaseAgent(ABC):
                             yield AgentEvent(type="done", data={})
                             return
                         if self._detect_repetition(
-                            "".join(assistant_content_parts)
+                            "".join(turn_content_parts)
                         ):
                             yield AgentEvent(
                                 type="error",
@@ -143,7 +147,7 @@ class BaseAgent(ABC):
                                 for tc in chunk.tool_calls
                             ]
                         )
-                    if chunk.finish_reason in ("stop", "end_turn"):
+                    if chunk.finish_reason in ("stop", "end_turn", "tool_calls"):
                         break
             except Exception as exc:
                 yield AgentEvent(
@@ -169,7 +173,7 @@ class BaseAgent(ABC):
             messages.append(
                 LLMMessage(
                     role="assistant",
-                    content="".join(assistant_content_parts) or None,
+                    content="".join(turn_content_parts) or None,
                     tool_calls=assistant_tool_calls,
                 )
             )

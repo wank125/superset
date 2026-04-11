@@ -194,9 +194,12 @@ class OpenAIProvider(BaseLLMProvider):
                         if fn.get("arguments"):
                             tc_accum[idx]["function"]["arguments"] += fn["arguments"]
 
-                # Only emit tool calls when finish_reason indicates completion
+                # Emit accumulated tool calls when finish_reason signals completion.
+                # Local/GLM models may return finish_reason="tool_calls", "stop", or
+                # even None/"" — flush tc_accum whenever finish_reason is non-null
+                # (including "tool_calls") to handle all variants.
                 tool_calls = None
-                if finish_reason in ("tool_calls", "stop") and tc_accum:
+                if finish_reason and tc_accum:
                     tool_calls = self._parse_accumulated_tool_calls(tc_accum)
                     tc_accum = {}
 

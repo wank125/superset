@@ -45,7 +45,7 @@ AI_LLM_DEFAULT_PROVIDER = "openai"
 AI_LLM_PROVIDERS = {
     "openai": {
         "api_key_env": "LM_STUDIO_API_KEY",
-        "model": "qwen/qwen3.5-35b-a3b",
+        "model": "glm-4.7-flash",
         "temperature": 0.0,
         "max_tokens": 4096,
         "base_url": "http://host.docker.internal:1234/v1",
