@@ -41,7 +41,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
         agent_type: Agent type string (e.g. "nl2sql")
         session_id: Conversation session ID
     """
-    from superset.ai.agent.events import AgentEvent
+    from superset.ai.config import use_stategraph
     from superset.ai.runner import create_agent_runner
     from superset.ai.streaming.manager import AiStreamManager
 
@@ -60,19 +60,33 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
 
         user = security_manager.get_user_by_id(user_id) if user_id else None
         with override_user(user):
-            runner = create_agent_runner(
-                agent_type=agent_type,
-                database_id=database_id,
-                schema_name=schema_name,
-                user_id=user_id,
-                session_id=session_id,
-            )
-            # The runner may need the User object for permission checks
-            # inside tools (get_schema, create_chart, etc.).  Store it
-            # on the runner so it can set up override_user internally.
-            if hasattr(runner, "set_user"):
-                runner.set_user(user)
-            for event in runner.run(message):
+            if use_stategraph() and agent_type in {"chart", "dashboard"}:
+                from superset.ai.graph.runner import run_graph
+
+                events = run_graph(
+                    agent_mode=agent_type,
+                    user_id=user_id,
+                    session_id=session_id,
+                    database_id=database_id,
+                    schema_name=schema_name,
+                    message=message,
+                )
+            else:
+                runner = create_agent_runner(
+                    agent_type=agent_type,
+                    database_id=database_id,
+                    schema_name=schema_name,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                # The runner may need the User object for permission checks
+                # inside tools (get_schema, create_chart, etc.).  Store it
+                # on the runner so it can set up override_user internally.
+                if hasattr(runner, "set_user"):
+                    runner.set_user(user)
+                events = runner.run(message)
+
+            for event in events:
                 stream.publish_event(channel_id, event)
     except Exception as exc:
         logger.exception("AI agent task failed")

@@ -479,3 +479,95 @@ class TestLangChainOrderGuard:
             session_id="test",
         )
         assert runner._order_guard is None
+
+
+class TestStateGraphPlanning:
+    """Tests for Phase 8 StateGraph deterministic planning guards."""
+
+    def test_saved_metric_name_normalizes_to_sql_expression(self):
+        from superset.ai.graph.nodes_child import _normalize_sql_plan
+
+        summary = {
+            "datasource_id": 1,
+            "table_name": "birth_names",
+            "datetime_cols": ["ds"],
+            "dimension_cols": ["gender", "state"],
+            "metric_cols": ["num"],
+            "saved_metrics": ["sum__num"],
+            "saved_metric_expressions": {"sum__num": "SUM(num)"},
+            "main_dttm_col": "ds",
+        }
+        plan = {
+            "metric_expr": "sum__num",
+            "dimensions": ["gender", "unknown_col"],
+            "time_field": "not_a_time_col",
+            "order_by": "unknown_col DESC",
+            "limit": 200,
+        }
+
+        normalized = _normalize_sql_plan(plan, summary)
+
+        assert normalized["metric_expr"] == "SUM(num)"
+        assert normalized["dimensions"] == ["gender"]
+        assert normalized["time_field"] is None
+        assert normalized["order_by"] is None
+
+    def test_unknown_metric_falls_back_to_first_numeric_column(self):
+        from superset.ai.graph.nodes_child import _normalize_sql_plan
+
+        summary = {
+            "datasource_id": 1,
+            "table_name": "birth_names",
+            "datetime_cols": [],
+            "dimension_cols": ["gender"],
+            "metric_cols": ["num"],
+            "saved_metrics": [],
+            "saved_metric_expressions": {},
+            "main_dttm_col": None,
+        }
+        plan = {"metric_expr": "sum__num", "dimensions": ["gender"]}
+
+        normalized = _normalize_sql_plan(plan, summary)
+
+        assert normalized["metric_expr"] == "SUM(num)"
+
+    def test_preferred_viz_alias_is_normalized(self):
+        from superset.ai.graph.nodes_parent import _normalize_preferred_viz
+
+        assert _normalize_preferred_viz("bar chart") == "echarts_timeseries_bar"
+        assert _normalize_preferred_viz("pie") == "pie"
+        assert _normalize_preferred_viz("not_a_chart_type") is None
+
+    def test_bar_chart_uses_groupby_as_x_axis_without_conflict(self):
+        with patch("superset.ai.graph.normalizer._build_column_lookup") as lookup:
+            from superset.ai.graph.normalizer import compile_superset_form_data
+
+            lookup.return_value = {
+                "gender": {"type": "VARCHAR", "groupable": True},
+                "num": {"type": "BIGINT", "groupable": False},
+            }
+            chart_plan = {
+                "viz_type": "echarts_timeseries_bar",
+                "slice_name": "Birth Count by Gender",
+                "semantic_params": {
+                    "metric": "SUM(num)",
+                    "groupby": ["gender"],
+                },
+                "rationale": "User requested a bar chart.",
+            }
+            summary = {
+                "datasource_id": 1,
+                "table_name": "birth_names",
+                "datetime_cols": [],
+                "dimension_cols": ["gender"],
+                "metric_cols": ["num"],
+                "saved_metrics": [],
+                "saved_metric_expressions": {},
+                "main_dttm_col": None,
+            }
+
+            form_data = compile_superset_form_data(chart_plan, summary)
+
+            assert form_data["x_axis"] == "gender"
+            assert form_data["groupby"] == []
+            assert form_data["metrics"][0]["label"] == "SUM(num)"

@@ -64,6 +64,12 @@ AI_AGENT_STREAM_CHANNEL_PREFIX = "ai-agent-"
 AI_AGENT_USE_LANGCHAIN = True
 
 # ---------------------------------------------------------------------------
+# StateGraph Integration (Phase 8)
+# When True, chart/dashboard agents use LangGraph StateGraph instead of
+# the LangChain ReAct agent.  Only applies to agent_type in {"chart", "dashboard"}.
+# NL2SQL and debug agents still use the legacy/LangChain path.
+# ---------------------------------------------------------------------------
+AI_AGENT_USE_STATEGRAPH = True
 # Celery: include AI agent task in imports
 # ---------------------------------------------------------------------------
 

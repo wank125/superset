@@ -57,3 +57,8 @@ def get_stream_channel_prefix() -> str:
 def use_langchain() -> bool:
     """Return True if the LangChain agent path should be used."""
     return bool(get_ai_config("AI_AGENT_USE_LANGCHAIN", False))
+
+
+def use_stategraph() -> bool:
+    """Return True if chart/dashboard agents should use StateGraph."""
+    return bool(get_ai_config("AI_AGENT_USE_STATEGRAPH", False))

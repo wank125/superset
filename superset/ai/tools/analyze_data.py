@@ -80,7 +80,6 @@ class AnalyzeDataTool(BaseTool):
         if not columns:
             return json.dumps(
                 {"error": "No data returned", "columns": [], "row_count": 0},
-                ensure_ascii=False,
             )
 
         # Analyze column shapes
@@ -111,7 +110,7 @@ class AnalyzeDataTool(BaseTool):
             "row_count": len(rows),
             "chart_recommendations": recommendations,
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return json.dumps(result, indent=2)
 
     @staticmethod
     def _parse_text_table(

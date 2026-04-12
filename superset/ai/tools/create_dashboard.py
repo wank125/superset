@@ -151,9 +151,8 @@ class CreateDashboardTool(BaseTool):
                         f"(id={existing.id}). Reusing. View at: "
                         f"{dashboard_url}"
                     ),
-                },
-                ensure_ascii=False,
-            )
+                    },
+                )
 
         # Generate a slug if not provided
         if not slug:
@@ -198,7 +197,6 @@ class CreateDashboardTool(BaseTool):
                     f"View at: {dashboard_url}"
                 ),
             },
-            ensure_ascii=False,
         )
 
     @staticmethod

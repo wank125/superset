@@ -257,9 +257,8 @@ class CreateChartTool(BaseTool):
                         f"(id={existing.id}). Reusing. View at: "
                         f"{explore_url}"
                     ),
-                },
-                ensure_ascii=False,
-            )
+                    },
+                )
 
         # Construct the data dict for CreateChartCommand
         chart_data: dict[str, Any] = {
@@ -290,7 +289,6 @@ class CreateChartTool(BaseTool):
                     f"View at: {explore_url}"
                 ),
             },
-            ensure_ascii=False,
         )
 
     @staticmethod

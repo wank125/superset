@@ -23,6 +23,7 @@ from typing import Any
 
 from superset.ai.chart_types.catalog import CATALOG
 from superset.ai.chart_types.schema import ChartTypeDescriptor
+from superset.utils import json
 
 
 class ChartTypeRegistry:
@@ -60,28 +61,35 @@ class ChartTypeRegistry:
         if not desc:
             return f"Unknown viz_type: {viz_type}"
 
+        metric_type = "是" if desc.uses_metric_singular else "否（用 metrics 数组）"
         lines = [
             f"### {desc.display_name} (`{desc.viz_type}`)",
             f"**{desc.description}**",
             f"- 分类: {desc.category}",
             f"- 适用: {'、'.join(desc.best_for)}",
             f"- 不适用: {'、'.join(desc.not_for)}",
-            f"- metric 单数: {'是' if desc.uses_metric_singular else '否（用 metrics 数组）'}",
+            f"- metric 单数: {metric_type}",
             f"- 需要时间列: {'是' if desc.requires_time_column else '否'}",
             "",
             "**参数:**",
         ]
         for p in desc.params:
             req = "必填" if p.required else "可选"
-            conflict = f"（与 {','.join(p.conflicts_with)} 冲突）" if p.conflicts_with else ""
+            conflict = (
+                f"（与 {','.join(p.conflicts_with)} 冲突）"
+                if p.conflicts_with
+                else ""
+            )
             default = f"，默认: {p.default}" if p.default is not None else ""
-            lines.append(f"- `{p.name}` ({p.type}, {req}{conflict}{default}): {p.description}")
+            lines.append(
+                f"- `{p.name}` ({p.type}, {req}{conflict}{default}): "
+                f"{p.description}"
+            )
 
         lines.append("")
         lines.append("**示例 form_data:**")
         lines.append("```json")
-        import json
-        lines.append(json.dumps(desc.example_form_data, ensure_ascii=False, indent=2))
+        lines.append(json.dumps(desc.example_form_data, indent=2))
         lines.append("```")
         return "\n".join(lines)
 
@@ -115,9 +123,9 @@ class ChartTypeRegistry:
 
         # conflict checks
         for p in desc.params:
-            if p.name in form_data:
+            if p.name in form_data and form_data[p.name]:
                 for conflict in p.conflicts_with:
-                    if conflict in form_data:
+                    if conflict in form_data and form_data[conflict]:
                         issues.append(
                             f"'{p.name}' conflicts with '{conflict}' in {viz_type}"
                         )
