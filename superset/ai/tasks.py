@@ -66,7 +66,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
     channel_id = kwargs["channel_id"]
     user_id = kwargs["user_id"]
     message = kwargs["message"]
-    database_id = kwargs["database_id"]
+    database_id = kwargs.get("database_id")
     schema_name = kwargs.get("schema_name")
     agent_type = kwargs.get("agent_type", "nl2sql")
     session_id = kwargs.get("session_id", channel_id)

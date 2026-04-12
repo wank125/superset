@@ -86,7 +86,7 @@ export function AiWorkspace() {
       });
   }, []);
 
-  const databaseId = activeSession?.databaseId ?? 1;
+  const databaseId = activeSession?.databaseId ?? null;
   const agentType = activeSession?.agentType ?? 'nl2sql';
 
   return (
@@ -141,8 +141,8 @@ export function AiWorkspace() {
       <AiNewSessionModal
         visible={showNewSessionModal}
         databases={databases}
-        onCreate={dbId => {
-          createSession(dbId, 'nl2sql');
+        onCreate={(dbId, agentType) => {
+          createSession(dbId, agentType);
           setShowNewSessionModal(false);
         }}
         onCancel={() => setShowNewSessionModal(false)}
@@ -154,7 +154,7 @@ export function AiWorkspace() {
 /** Inner component that owns a single chat session. Remounted on session switch via key. */
 interface AiChatSessionProps {
   sessionId: string;
-  databaseId: number;
+  databaseId: number | null;
   agentType: string;
   onTitleUpdate: (title: string) => void;
   onAgentTypeChange: (type: string) => void;

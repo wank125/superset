@@ -22,6 +22,7 @@ from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from superset.ai.agent.chart_agent import ChartAgent
+from superset.ai.agent.copilot_agent import CopilotAgent
 from superset.ai.agent.dashboard_agent import DashboardAgent
 from superset.ai.agent.debug_agent import DebugAgent
 from superset.ai.agent.nl2sql_agent import NL2SQLAgent
@@ -31,6 +32,7 @@ _AGENT_PROMPT_BUILDERS: dict[str, type] = {
     "chart": ChartAgent,
     "debug": DebugAgent,
     "dashboard": DashboardAgent,
+    "copilot": CopilotAgent,
 }
 
 _NL2SQL_EXECUTION_RULE = """

@@ -19,6 +19,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import type {
+  AiChatRequest,
   AiChatMessage,
   AiStep,
   ChartResult,
@@ -28,6 +29,7 @@ import { sendChat, fetchEvents } from '../api/aiClient';
 
 const POLL_INTERVAL_MS = 500;
 const MAX_POLL_ATTEMPTS = 360; // 180 seconds
+const SQL_RESULT_HEADER = '查询结果';
 
 /** Generate a stable session ID that persists for the lifetime of the hook. */
 function createSessionId(): string {
@@ -36,8 +38,18 @@ function createSessionId(): string {
 
 let stepCounter = 0;
 
+function appendSqlResult(content: string, sqlResult: string | null): string {
+  const result = sqlResult?.trim();
+  if (!result || content.includes(SQL_RESULT_HEADER)) {
+    return content;
+  }
+  const prefix = content.trim();
+  const resultBlock = `${SQL_RESULT_HEADER}：\n\n\`\`\`text\n${result}\n\`\`\``;
+  return prefix ? `${prefix}\n\n${resultBlock}` : resultBlock;
+}
+
 export function useAiChat(
-  databaseId: number,
+  databaseId: number | null,
   agentType: string = 'nl2sql',
   sessionId?: string,
   initialMessages: AiChatMessage[] = [],
@@ -65,6 +77,7 @@ export function useAiChat(
   // Track latest results via refs so finalize() can read them synchronously
   const chartResultsRef = useRef<ChartResult[]>([]);
   const dashboardResultRef = useRef<DashboardResult | null>(null);
+  const latestSqlResultRef = useRef<string | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -74,19 +87,27 @@ export function useAiChat(
   }, []);
 
   const addStep = useCallback(
-    (label: string, status: AiStep['status'], type: AiStep['type'] = 'thinking', detail?: string) => {
+    (
+      label: string,
+      status: AiStep['status'],
+      type: AiStep['type'] = 'thinking',
+      detail?: string,
+    ) => {
       // Deduplicate by label — update existing step status instead of appending
       if (stepLabelsRef.current.has(label)) {
         setSteps(prev =>
           prev.map(s =>
-            s.label === label ? { ...s, status, detail: detail ?? s.detail } : s,
+            s.label === label
+              ? { ...s, status, detail: detail ?? s.detail }
+              : s,
           ),
         );
         return;
       }
       stepLabelsRef.current.add(label);
+      stepCounter += 1;
       const step: AiStep = {
-        id: `step-${++stepCounter}`,
+        id: `step-${stepCounter}`,
         type,
         label,
         status,
@@ -99,7 +120,9 @@ export function useAiChat(
 
   const markAllRunningDone = useCallback(() => {
     setSteps(prev =>
-      prev.map(s => (s.status === 'running' ? { ...s, status: 'done' as const } : s)),
+      prev.map(s =>
+        s.status === 'running' ? { ...s, status: 'done' as const } : s,
+      ),
     );
   }, []);
 
@@ -112,6 +135,7 @@ export function useAiChat(
     setDashboardResult(null);
     dashboardResultRef.current = null;
     setSqlPreview(null);
+    latestSqlResultRef.current = null;
     stepLabelsRef.current.clear();
   }, []);
 
@@ -121,7 +145,11 @@ export function useAiChat(
       if (accumulated) {
         setMessages(msgs => [
           ...msgs,
-          { role: 'assistant' as const, content: accumulated, timestamp: Date.now() },
+          {
+            role: 'assistant' as const,
+            content: appendSqlResult(accumulated, latestSqlResultRef.current),
+            timestamp: Date.now(),
+          },
         ]);
       } else {
         // StateGraph path: no text_chunk events, generate summary from results
@@ -145,7 +173,23 @@ export function useAiChat(
           }
           setMessages(msgs => [
             ...msgs,
-            { role: 'assistant' as const, content: lines.join('\n'), timestamp: Date.now() },
+            {
+              role: 'assistant' as const,
+              content: appendSqlResult(
+                lines.join('\n'),
+                latestSqlResultRef.current,
+              ),
+              timestamp: Date.now(),
+            },
+          ]);
+        } else if (latestSqlResultRef.current) {
+          setMessages(msgs => [
+            ...msgs,
+            {
+              role: 'assistant' as const,
+              content: appendSqlResult('', latestSqlResultRef.current),
+              timestamp: Date.now(),
+            },
           ]);
         }
       }
@@ -182,11 +226,18 @@ export function useAiChat(
                 break;
               }
               case 'tool_result': {
+                const tool = (event.data.tool as string) || '';
+                const result = (event.data.result as string) || '';
+                if (tool === 'execute_sql' && result) {
+                  latestSqlResultRef.current = result;
+                }
                 // Mark the last running tool_call step as done
                 setSteps(prev => {
                   const idx = [...prev]
                     .reverse()
-                    .findIndex(s => s.type === 'tool_call' && s.status === 'running');
+                    .findIndex(
+                      s => s.type === 'tool_call' && s.status === 'running',
+                    );
                   if (idx === -1) return prev;
                   const realIdx = prev.length - 1 - idx;
                   return prev.map((s, i) =>
@@ -231,8 +282,7 @@ export function useAiChat(
               case 'dashboard_created': {
                 const dash: DashboardResult = {
                   dashboardId: event.data.dashboard_id as number,
-                  dashboardTitle:
-                    (event.data.dashboard_title as string) || '',
+                  dashboardTitle: (event.data.dashboard_title as string) || '',
                   dashboardUrl: (event.data.dashboard_url as string) || '',
                   chartCount: (event.data.chart_count as number) || 0,
                 };
@@ -320,12 +370,15 @@ export function useAiChat(
       resetState();
 
       try {
-        const { channel_id: channelId } = await sendChat({
+        const payload: AiChatRequest = {
           message,
-          database_id: databaseId,
           agent_type: agentType,
           session_id: sessionIdRef.current,
-        });
+        };
+        if (databaseId != null) {
+          payload.database_id = databaseId;
+        }
+        const { channel_id: channelId } = await sendChat(payload);
         pollEvents(channelId, '0', 0);
       } catch (err) {
         setMessages(prev => [

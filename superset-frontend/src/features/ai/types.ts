@@ -69,7 +69,7 @@ export interface DashboardResult {
 
 export interface AiChatRequest {
   message: string;
-  database_id: number;
+  database_id?: number;
   agent_type?: string;
   session_id?: string;
 }

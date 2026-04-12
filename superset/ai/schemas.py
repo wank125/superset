@@ -23,11 +23,11 @@ class AiChatPostSchema(Schema):
     """Request body for ``POST /api/v1/ai/chat/``."""
 
     message = fields.String(required=True, validate=validate.Length(min=1, max=2000))
-    database_id = fields.Integer(required=True)
+    database_id = fields.Integer(load_default=None)
     schema_name = fields.String(load_default=None)
     agent_type = fields.String(
         load_default="nl2sql",
-        validate=validate.OneOf(["nl2sql", "chart", "debug", "dashboard"]),
+        validate=validate.OneOf(["nl2sql", "chart", "debug", "dashboard", "copilot"]),
     )
     session_id = fields.String(load_default=None)
 

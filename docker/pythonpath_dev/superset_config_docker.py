@@ -35,6 +35,7 @@ FEATURE_FLAGS = {
     "AI_AGENT_CHART": True,
     "AI_AGENT_DEBUG": True,
     "AI_AGENT_DASHBOARD": True,
+    "AI_AGENT_COPILOT": True,
 }
 
 # ---------------------------------------------------------------------------

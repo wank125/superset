@@ -28,6 +28,7 @@ const AGENT_MODES = [
   { label: 'SQL', value: 'nl2sql' },
   { label: 'Chart', value: 'chart' },
   { label: 'Dashboard', value: 'dashboard' },
+  { label: 'Copilot', value: 'copilot' },
 ];
 
 interface AiWorkspaceInputProps {
@@ -140,7 +141,9 @@ export function AiWorkspaceInput({
       ? t('描述你想创建的仪表板...')
       : agentType === 'chart'
         ? t('描述你想创建的图表...')
-        : t('输入你的问题...');
+        : agentType === 'copilot'
+          ? t('问我关于 Superset 资产的任何问题...')
+          : t('输入你的问题...');
 
   return (
     <InputBar>

@@ -18,15 +18,27 @@
  */
 
 import { useState } from 'react';
-import { t } from '@superset-ui/core';
+import { styled, t } from '@superset-ui/core';
 import { Modal, Select } from '@superset-ui/core/components';
+import { Radio, RadioChangeEvent } from '@superset-ui/core/components/Radio';
 
 interface AiNewSessionModalProps {
   visible: boolean;
   databases: { id: number; database_name: string }[];
-  onCreate: (databaseId: number) => void;
+  onCreate: (databaseId: number | null, agentType: string) => void;
   onCancel: () => void;
 }
+
+const AgentModeGroup = styled.div`
+  margin-bottom: 16px;
+`;
+
+const AGENT_MODES = [
+  { label: 'SQL', value: 'nl2sql' },
+  { label: 'Chart', value: 'chart' },
+  { label: 'Dashboard', value: 'dashboard' },
+  { label: 'Copilot', value: 'copilot' },
+];
 
 export function AiNewSessionModal({
   visible,
@@ -35,16 +47,19 @@ export function AiNewSessionModal({
   onCancel,
 }: AiNewSessionModalProps) {
   const [selectedDb, setSelectedDb] = useState<number | undefined>(undefined);
+  const [agentType, setAgentType] = useState('nl2sql');
+
+  const isCopilot = agentType === 'copilot';
 
   const handlePrimaryAction = () => {
-    if (selectedDb !== undefined) {
-      onCreate(selectedDb);
-      setSelectedDb(undefined);
-    }
+    onCreate(selectedDb ?? null, agentType);
+    setSelectedDb(undefined);
+    setAgentType('nl2sql');
   };
 
   const handleHide = () => {
     setSelectedDb(undefined);
+    setAgentType('nl2sql');
     onCancel();
   };
 
@@ -61,10 +76,24 @@ export function AiNewSessionModal({
       onHide={handleHide}
       onHandledPrimaryAction={handlePrimaryAction}
       primaryButtonName={t('创建')}
-      disablePrimaryButton={selectedDb === undefined}
+      disablePrimaryButton={!isCopilot && selectedDb === undefined}
       destroyOnHidden
     >
-      <div style={{ marginBottom: 8 }}>{t('选择数据库')}</div>
+      <AgentModeGroup>
+        <div style={{ marginBottom: 8 }}>{t('辅助类型')}</div>
+        <Radio.Group
+          optionType="button"
+          buttonStyle="solid"
+          size="small"
+          options={AGENT_MODES}
+          value={agentType}
+          onChange={(e: RadioChangeEvent) => setAgentType(e.target.value)}
+        />
+      </AgentModeGroup>
+      <div style={{ marginBottom: 8 }}>
+        {t('选择数据库')}
+        {!isCopilot && ' *'}
+      </div>
       <Select
         style={{ width: '100%' }}
         placeholder={t('请选择数据库...')}

@@ -117,6 +117,18 @@ class AiAgentRestApi(BaseSupersetApi):
             return self.response_400(
                 message="Dashboard agent is not enabled. Enable AI_AGENT_DASHBOARD feature flag."
             )
+        if agent_type == "copilot" and not is_feature_enabled(
+            "AI_AGENT_COPILOT"
+        ):
+            return self.response_400(
+                message="Copilot agent is not enabled. Enable AI_AGENT_COPILOT feature flag."
+            )
+
+        # Non-copilot agents require database_id
+        if agent_type != "copilot" and not body.get("database_id"):
+            return self.response_400(
+                message="database_id is required for non-copilot agents."
+            )
 
         import uuid
 
@@ -126,7 +138,7 @@ class AiAgentRestApi(BaseSupersetApi):
                 "channel_id": channel_id,
                 "user_id": g.user.id if g.user else None,
                 "message": body["message"],
-                "database_id": body["database_id"],
+                "database_id": body.get("database_id"),
                 "schema_name": body.get("schema_name"),
                 "agent_type": body.get("agent_type", "nl2sql"),
                 "session_id": body.get("session_id"),

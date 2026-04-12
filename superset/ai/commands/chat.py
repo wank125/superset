@@ -25,6 +25,7 @@ from typing import Any
 
 from superset.ai.agent.context import ConversationContext
 from superset.ai.agent.chart_agent import ChartAgent
+from superset.ai.agent.copilot_agent import CopilotAgent
 from superset.ai.agent.dashboard_agent import DashboardAgent
 from superset.ai.agent.debug_agent import DebugAgent
 from superset.ai.agent.events import AgentEvent
@@ -44,6 +45,7 @@ _AGENT_MAP: dict[str, type] = {
     "chart": ChartAgent,
     "debug": DebugAgent,
     "dashboard": DashboardAgent,
+    "copilot": CopilotAgent,
 }
 
 
@@ -63,7 +65,7 @@ class AiChatCommand(BaseCommand):
         """Execute the chat command synchronously (used by Celery task)."""
         self.validate()
         message = self._data["message"]
-        database_id = self._data["database_id"]
+        database_id = self._data.get("database_id")
         schema_name = self._data.get("schema_name")
         agent_type = self._data.get("agent_type", "nl2sql")
         session_id = self._data.get("session_id") or self._channel_id
@@ -94,8 +96,9 @@ class AiChatCommand(BaseCommand):
     def validate(self) -> None:
         if not self._data.get("message"):
             raise ValueError("message is required")
-        if not self._data.get("database_id"):
-            raise ValueError("database_id is required")
+        agent_type = self._data.get("agent_type", "nl2sql")
+        if agent_type != "copilot" and not self._data.get("database_id"):
+            raise ValueError("database_id is required for non-copilot agents")
 
     @property
     def channel_id(self) -> str:
@@ -116,7 +119,7 @@ class LegacyAgentRunner(AgentRunner):
     def __init__(
         self,
         agent_type: str,
-        database_id: int,
+        database_id: int | None,
         schema_name: str | None,
         user_id: int,
         session_id: str,

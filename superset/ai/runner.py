@@ -51,7 +51,7 @@ class AgentRunner:
 
 def create_agent_runner(
     agent_type: str,
-    database_id: int,
+    database_id: int | None,
     schema_name: str | None,
     user_id: int,
     session_id: str,

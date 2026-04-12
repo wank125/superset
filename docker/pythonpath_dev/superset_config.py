@@ -105,6 +105,12 @@ CELERY_CONFIG = CeleryConfig
 FEATURE_FLAGS = {
     "ALERT_REPORTS": True,
     "EMBEDDED_SUPERSET": True,  # Enable embedded dashboards
+    "AI_AGENT": True,
+    "AI_AGENT_NL2SQL": True,
+    "AI_AGENT_CHART": True,
+    "AI_AGENT_DEBUG": True,
+    "AI_AGENT_DASHBOARD": True,
+    "AI_AGENT_COPILOT": True,
 }
 
 # Guest Token JWT Configuration

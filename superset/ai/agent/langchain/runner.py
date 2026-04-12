@@ -44,8 +44,18 @@ from superset.ai.tools.base import BaseTool
 from superset.ai.tools.create_chart import CreateChartTool
 from superset.ai.tools.create_dashboard import CreateDashboardTool
 from superset.ai.tools.execute_sql import ExecuteSqlTool
+from superset.ai.tools.get_chart_detail import GetChartDetailTool
+from superset.ai.tools.get_dashboard_detail import GetDashboardDetailTool
+from superset.ai.tools.get_dataset_detail import GetDatasetDetailTool
 from superset.ai.tools.get_schema import GetSchemaTool
+from superset.ai.tools.list_charts import ListChartsTool
+from superset.ai.tools.list_dashboards import ListDashboardsTool
+from superset.ai.tools.list_databases import ListDatabasesTool
+from superset.ai.tools.query_history import QueryHistoryTool
+from superset.ai.tools.report_status import ReportStatusTool
+from superset.ai.tools.saved_query import SavedQueryTool
 from superset.ai.tools.search_datasets import SearchDatasetsTool
+from superset.ai.tools.whoami import WhoAmITool
 
 
 @contextmanager
@@ -81,18 +91,36 @@ _TOOL_MAP: dict[str, list[tuple[type[BaseTool], list[str]]]] = {
         (CreateChartTool, []),
         (CreateDashboardTool, []),
     ],
+    "copilot": [
+        (ListDatabasesTool, []),
+        (GetDatasetDetailTool, []),
+        (ListChartsTool, []),
+        (ListDashboardsTool, []),
+        (WhoAmITool, []),
+        (GetChartDetailTool, []),
+        (GetDashboardDetailTool, []),
+        (QueryHistoryTool, []),
+        (SavedQueryTool, []),
+        (ReportStatusTool, []),
+        (GetSchemaTool, ["database_id", "default_schema"]),
+        (ExecuteSqlTool, ["database_id"]),
+        (SearchDatasetsTool, ["database_id", "schema_name"]),
+    ],
 }
 
 
 def _instantiate_tools(
     agent_type: str,
-    database_id: int,
+    database_id: int | None,
     schema_name: str | None,
 ) -> list[BaseTool]:
     """Create BaseTool instances for the given agent type."""
     tool_specs = _TOOL_MAP.get(agent_type, _TOOL_MAP["nl2sql"])
     tools: list[BaseTool] = []
     for tool_cls, kwargs_keys in tool_specs:
+        # Skip tools that require database_id when it is not provided
+        if "database_id" in kwargs_keys and database_id is None:
+            continue
         kwargs: dict[str, Any] = {}
         if "database_id" in kwargs_keys:
             kwargs["database_id"] = database_id
@@ -114,7 +142,7 @@ class LangChainAgentRunner(AgentRunner):
     def __init__(
         self,
         agent_type: str,
-        database_id: int,
+        database_id: int | None,
         schema_name: str | None,
         user_id: int,
         session_id: str,
