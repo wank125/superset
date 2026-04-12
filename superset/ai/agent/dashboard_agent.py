@@ -19,11 +19,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from typing import Any
 
 from superset.ai.agent.base import BaseAgent
 from superset.ai.agent.context import ConversationContext
-from superset.ai.agent.events import AgentEvent
 from superset.ai.agent.langchain.guard import ToolOrderGuard
 from superset.ai.chart_types.registry import get_chart_registry
 from superset.ai.llm.base import BaseLLMProvider
@@ -90,194 +89,63 @@ class DashboardAgent(BaseAgent):
             prompt += f"\n\nThe user is working in schema: {self._schema_name}"
         return prompt
 
-    def run(self, user_message: str) -> Iterator[AgentEvent]:  # noqa: C901
-        """Execute the ReAct loop with sequential tool-order enforcement."""
-        messages = [
-            LLMMessage(role="system", content=self.get_system_prompt())
-        ]
-        for entry in self._context.get_history():
-            messages.append(
-                LLMMessage(role=entry["role"], content=entry["content"])
-            )
-        messages.append(LLMMessage(role="user", content=user_message))
+    # ── Hook overrides ──────────────────────────────────────────────
 
-        self._context.add_message("user", user_message)
+    def _on_run_start(self) -> None:
         self._order_guard.reset()
 
-        assistant_content_parts: list[str] = []
-        tool_defs = self._get_tool_defs() if self._tools else None
+    def _pre_tool_execution(
+        self,
+        tool_calls: list[dict],
+        messages: list[LLMMessage],
+        turn_content: str,
+    ) -> tuple[list[dict], list[LLMMessage]]:
+        """Enforce tool-call ordering via ToolOrderGuard.
 
-        for _turn in range(self._max_turns):
-            tool_calls_acc: list[dict] = []
-            turn_content_parts: list[str] = []
-            stream_chars = 0
+        Out-of-order calls are blocked and replaced with correction messages
+        so the LLM retries with an allowed tool.
+        """
+        allowed = self._order_guard.allowed_tools
+        filtered: list[dict] = []
+        extra_messages: list[LLMMessage] = []
 
-            try:
-                for chunk in self._provider.chat_stream(
-                    messages, tools=tool_defs
-                ):
-                    if chunk.content:
-                        turn_content_parts.append(chunk.content)
-                        assistant_content_parts.append(chunk.content)
-                        stream_chars += len(chunk.content)
-                        yield AgentEvent(
-                            type="text_chunk",
-                            data={"content": chunk.content},
-                        )
-                        if stream_chars > self._MAX_STREAM_CHARS:
-                            yield AgentEvent(
-                                type="error",
-                                data={
-                                    "message": (
-                                        "Response too long, stopped early."
-                                    )
-                                },
-                            )
-                            self._context.add_message(
-                                "assistant",
-                                "".join(assistant_content_parts)[
-                                    :self._MAX_STREAM_CHARS
-                                ],
-                            )
-                            yield AgentEvent(type="done", data={})
-                            return
-                        if self._detect_repetition(
-                            "".join(turn_content_parts)
-                        ):
-                            yield AgentEvent(
-                                type="error",
-                                data={
-                                    "message": (
-                                        "Detected repetitive output, stopped."
-                                    )
-                                },
-                            )
-                            self._context.add_message(
-                                "assistant",
-                                "".join(assistant_content_parts),
-                            )
-                            yield AgentEvent(type="done", data={})
-                            return
-                    if chunk.tool_calls:
-                        tool_calls_acc.extend(
-                            [
-                                {
-                                    "id": tc.id,
-                                    "name": tc.name,
-                                    "arguments": tc.arguments,
-                                }
-                                for tc in chunk.tool_calls
-                            ]
-                        )
-                    if chunk.finish_reason in (
-                        "stop",
-                        "end_turn",
-                        "tool_calls",
-                    ):
-                        break
-            except Exception as exc:
-                yield AgentEvent(
-                    type="error",
-                    data={"message": f"LLM call failed: {exc}"},
+        for tc in tool_calls:
+            if tc["name"] in self._tools and not self._order_guard.check(
+                tc["name"]
+            ):
+                logger.warning(
+                    "Tool '%s' called out of order (phase=%d), blocking",
+                    tc["name"],
+                    self._order_guard.phase_idx,
                 )
-                return
-
-            if not tool_calls_acc:
-                break
-
-            # Enforce tool call order via guard
-            allowed = self._order_guard.allowed_tools
-            filtered_calls: list[dict] = []
-            for tc in tool_calls_acc:
-                if tc["name"] in self._tools and not self._order_guard.check(
-                    tc["name"]
-                ):
-                    logger.warning(
-                        "Tool '%s' called out of order (phase=%d), blocking",
-                        tc["name"],
-                        self._order_guard.phase_idx,
-                    )
-                    messages.append(
-                        LLMMessage(
-                            role="assistant",
-                            content="".join(turn_content_parts) or None,
-                            tool_calls=[
-                                ToolCall(
-                                    id=tc["id"],
-                                    name=tc["name"],
-                                    arguments=tc["arguments"],
-                                )
-                            ],
-                        )
-                    )
-                    correction = (
-                        f"You must follow the workflow in order. "
-                        f"Call one of: {', '.join(sorted(allowed))} next."
-                    )
-                    messages.append(
-                        LLMMessage(
-                            role="tool",
-                            content=correction,
-                            tool_call_id=tc["id"],
-                        )
-                    )
-                    yield AgentEvent(
-                        type="error",
-                        data={
-                            "message": (
-                                f"Tool '{tc['name']}' called before required "
-                                f"steps completed. Please follow the workflow."
+                correction = (
+                    f"You must follow the workflow in order. "
+                    f"Call one of: {', '.join(sorted(allowed))} next."
+                )
+                extra_messages.append(
+                    LLMMessage(
+                        role="assistant",
+                        content=turn_content or None,
+                        tool_calls=[
+                            ToolCall(
+                                id=tc["id"],
+                                name=tc["name"],
+                                arguments=tc["arguments"],
                             )
-                        },
+                        ],
                     )
-                else:
-                    filtered_calls.append(tc)
-
-            if not filtered_calls:
-                continue
-
-            # Append assistant message with filtered tool calls
-            assistant_tool_calls = [
-                ToolCall(
-                    id=tc["id"],
-                    name=tc["name"],
-                    arguments=tc["arguments"],
                 )
-                for tc in filtered_calls
-            ]
-            messages.append(
-                LLMMessage(
-                    role="assistant",
-                    content="".join(turn_content_parts) or None,
-                    tool_calls=assistant_tool_calls,
-                )
-            )
-
-            # Execute each tool call
-            for tc in filtered_calls:
-                self._order_guard.advance(tc["name"])
-
-                yield AgentEvent(
-                    type="tool_call",
-                    data={"tool": tc["name"], "args": tc["arguments"]},
-                )
-                try:
-                    result = self._tools[tc["name"]].run(tc["arguments"])
-                except Exception as exc:
-                    result = f"Tool error: {exc}"
-
-                messages.append(
+                extra_messages.append(
                     LLMMessage(
                         role="tool",
-                        content=result,
+                        content=correction,
                         tool_call_id=tc["id"],
                     )
                 )
-                yield AgentEvent(
-                    type="tool_result",
-                    data={"tool": tc["name"], "result": result},
-                )
+            else:
+                filtered.append(tc)
 
-        full_response = "".join(assistant_content_parts)
-        self._context.add_message("assistant", full_response)
-        yield AgentEvent(type="done", data={})
+        return filtered, extra_messages
+
+    def _on_tool_executed(self, tool_name: str) -> None:
+        self._order_guard.advance(tool_name)

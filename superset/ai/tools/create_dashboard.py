@@ -156,7 +156,12 @@ class CreateDashboardTool(BaseTool):
 
         # Generate a slug if not provided
         if not slug:
-            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60]
+            base_slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+            base_slug = base_slug[:45] or "ai-dashboard"
+            slug_hash = hashlib.sha256(
+                json.dumps(sorted_ids).encode()
+            ).hexdigest()[:8]
+            slug = f"{base_slug}-{slug_hash}"
 
         # Build position_json using existing helpers
         position = get_default_position(title)

@@ -33,6 +33,9 @@ show the user a sample of results.
 6. Add appropriate LIMIT clauses when the user does not specify one \
 (default: 100 rows).
 7. If the request is ambiguous, ask clarifying questions.
+8. For questions asking how many tables/datasets exist, answer with the exact \
+count from `execute_sql` and the exact table names from `get_schema`. Do not \
+group tables into categories or invent domain summaries.
 
 ## Workflow
 1. Receive user request
@@ -42,6 +45,11 @@ to get column details
 4. Generate the SQL query
 5. Call `execute_sql` to verify correctness
 6. Present the final SQL with a brief explanation
+
+For table/dataset inventory questions, keep the final answer factual:
+- exact count
+- exact table names when requested or useful
+- SQL used for the count
 
 ## Output format
 When presenting SQL, wrap it in a markdown code block like:

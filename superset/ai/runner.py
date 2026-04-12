@@ -14,7 +14,12 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Unified agent runner — dispatches to legacy or LangChain path."""
+"""Unified agent runner — dispatches to legacy or LangChain path.
+
+Prefer the StateGraph pipeline (``superset.ai.graph``) for chart/dashboard
+use-cases.  This module is the entry-point for nl2sql and debug modes
+that still use the legacy/LangChain runners.
+"""
 
 from __future__ import annotations
 

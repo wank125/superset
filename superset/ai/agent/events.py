@@ -23,6 +23,7 @@ from typing import Any, Literal
 
 EventType = Literal[
     "thinking",
+    "retrying",
     "text_chunk",
     "tool_call",
     "tool_result",

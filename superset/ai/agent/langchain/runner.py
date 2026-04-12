@@ -342,3 +342,16 @@ class LangChainAgentRunner(AgentRunner):
                             len(msg.tool_calls),
                             msg.tool_calls[0]["name"],
                         )
+
+                    for tool_call in msg.tool_calls[:1]:
+                        tool_name = tool_call.get("name")
+                        args = tool_call.get("args") or {}
+                        if (
+                            tool_name == "execute_sql"
+                            and isinstance(args, dict)
+                            and args.get("sql")
+                        ):
+                            yield AgentEvent(
+                                type="sql_generated",
+                                data={"sql": args["sql"]},
+                            )

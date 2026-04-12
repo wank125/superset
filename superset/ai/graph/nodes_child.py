@@ -49,6 +49,33 @@ _AGG_EXPR_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def _publish_retry(
+    state: SingleChartState,
+    *,
+    node: str,
+    reason: str,
+    attempt: int,
+) -> None:
+    """Publish a retrying event to the Redis stream if channel_id is set."""
+    channel_id = state.get("channel_id")
+    if not channel_id:
+        return
+    try:
+        from superset.ai.agent.events import AgentEvent
+        from superset.ai.streaming.manager import AiStreamManager
+
+        AiStreamManager().publish_event(
+            channel_id,
+            AgentEvent(
+                type="retrying",
+                data={"node": node, "reason": reason, "attempt": attempt},
+            ),
+        )
+    except Exception:
+        pass
+
+
 # ── Prompts ─────────────────────────────────────────────────────────
 
 PLAN_QUERY_PROMPT = """\
@@ -94,13 +121,7 @@ Data suitability:
 Columns: time={datetime_col}, numeric={numeric_cols}, low-cardinality={low_card_cols}
 
 Chart types reference:
-echarts_timeseries_line  → good_for_trend=true, needs time_field + metric
-echarts_timeseries_bar   → good_for_comparison/trend, needs x_field + metrics
-echarts_area             → good_for_trend, needs time_field + metric
-pie                      → good_for_composition, needs metric(singular) + groupby
-big_number_total         → good_for_kpi, needs metric(singular) only
-table                    → always works, needs metrics + groupby
-bar_chart (horizontal)   → good_for_comparison, needs x_field + metrics
+{chart_type_reference}
 
 Output:
 {{
@@ -138,7 +159,7 @@ Schema:
 
 def plan_query(
     state: SingleChartState,
-) -> Command[Literal["validate_sql"]]:
+) -> Command[Literal["validate_sql", "__end__"]]:
     summary: SchemaSummary = state["schema_summary"]
     intent = state["chart_intent"]
     error_hint = ""
@@ -160,7 +181,21 @@ def plan_query(
         saved_metrics=summary["saved_metrics"],
         error_hint=error_hint,
     )
-    sql_plan = llm_call_json(prompt)
+    try:
+        sql_plan = llm_call_json(prompt)
+    except ValueError as exc:
+        logger.warning("plan_query LLM error: %s", exc)
+        return Command(
+            update={
+                "last_error": {
+                    "node": "plan_query",
+                    "type": "llm_format_error",
+                    "message": str(exc),
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
     return Command(update={"sql_plan": sql_plan}, goto="validate_sql")
 
 
@@ -191,6 +226,8 @@ def validate_sql(
                 },
                 goto="__end__",
             )
+        attempts = state.get("sql_attempts", 0) + 1
+        _publish_retry(state, node="validate_sql", reason=str(exc), attempt=attempts)
         return Command(
             update={
                 "last_error": {
@@ -199,7 +236,7 @@ def validate_sql(
                     "message": str(exc),
                     "recoverable": True,
                 },
-                "sql_attempts": state.get("sql_attempts", 0) + 1,
+                "sql_attempts": attempts,
             },
             goto="plan_query",
         )
@@ -225,6 +262,13 @@ def validate_sql(
                 },
                 goto="__end__",
             )
+        attempts = state.get("sql_attempts", 0) + 1
+        _publish_retry(
+            state,
+            node="validate_sql",
+            reason="; ".join(issues),
+            attempt=attempts,
+        )
         return Command(
             update={
                 "last_error": {
@@ -233,7 +277,7 @@ def validate_sql(
                     "message": "; ".join(issues),
                     "recoverable": True,
                 },
-                "sql_attempts": state.get("sql_attempts", 0) + 1,
+                "sql_attempts": attempts,
             },
             goto="plan_query",
         )
@@ -391,6 +435,13 @@ def execute_query(
                 },
                 goto="__end__",
             )
+        attempts = state.get("sql_attempts", 0) + 1
+        _publish_retry(
+            state,
+            node="execute_query",
+            reason=result_str[:200],
+            attempt=attempts,
+        )
         return Command(
             update={
                 "last_error": {
@@ -399,7 +450,7 @@ def execute_query(
                     "message": result_str,
                     "recoverable": True,
                 },
-                "sql_attempts": state.get("sql_attempts", 0) + 1,
+                "sql_attempts": attempts,
             },
             goto="plan_query",
         )
@@ -481,7 +532,7 @@ def analyze_result(
 
 def select_chart(
     state: SingleChartState,
-) -> Command[Literal["normalize_chart_params"]]:
+) -> Command[Literal["normalize_chart_params", "__end__"]]:
     intent = state["chart_intent"]
     result_summary = state["query_result_summary"]
     flags = result_summary["suitability_flags"]
@@ -490,6 +541,9 @@ def select_chart(
         f"  {k}=true" for k, v in flags.items() if v
     ) or "  (no strong signal, use table)"
 
+    from superset.ai.chart_types.registry import get_chart_registry
+
+    chart_ref = get_chart_registry().format_for_prompt()
     prompt = SELECT_CHART_PROMPT.format(
         analysis_intent=intent["analysis_intent"],
         slice_name=intent["slice_name"],
@@ -498,8 +552,23 @@ def select_chart(
         datetime_col=result_summary.get("datetime_col"),
         numeric_cols=result_summary["numeric_cols"][:4],
         low_card_cols=result_summary["low_cardinality_cols"][:4],
+        chart_type_reference=chart_ref,
     )
-    chart_plan = llm_call_json(prompt)
+    try:
+        chart_plan = llm_call_json(prompt)
+    except ValueError as exc:
+        logger.warning("select_chart LLM error: %s", exc)
+        return Command(
+            update={
+                "last_error": {
+                    "node": "select_chart",
+                    "type": "llm_format_error",
+                    "message": str(exc),
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
     preferred_viz = intent.get("preferred_viz")
     if preferred_viz:
         chart_plan["viz_type"] = preferred_viz
@@ -560,6 +629,13 @@ def normalize_chart_params(
             goto="create_chart",
         )
     except ValueError as exc:
+        repair_count = state.get("repair_attempts", 0) + 1
+        _publish_retry(
+            state,
+            node="normalize_chart_params",
+            reason=str(exc),
+            attempt=repair_count,
+        )
         return Command(
             update={
                 "last_error": {
@@ -568,7 +644,7 @@ def normalize_chart_params(
                     "message": str(exc),
                     "recoverable": True,
                 },
-                "repair_attempts": state.get("repair_attempts", 0) + 1,
+                "repair_attempts": repair_count,
             },
             goto="repair_chart_params",
         )
@@ -579,7 +655,7 @@ def normalize_chart_params(
 
 def repair_chart_params(
     state: SingleChartState,
-) -> Command[Literal["normalize_chart_params"]]:
+) -> Command[Literal["normalize_chart_params", "__end__"]]:
     summary: SchemaSummary = state["schema_summary"]
     last_err = state.get("last_error", {})
     chart_plan = state.get("chart_plan", {})
@@ -591,7 +667,21 @@ def repair_chart_params(
         numeric_cols=summary["metric_cols"],
         string_cols=summary["dimension_cols"],
     )
-    fixed = llm_call_json(prompt)
+    try:
+        fixed = llm_call_json(prompt)
+    except ValueError as exc:
+        logger.warning("repair_chart_params LLM error: %s", exc)
+        return Command(
+            update={
+                "last_error": {
+                    "node": "repair_chart_params",
+                    "type": "llm_format_error",
+                    "message": str(exc),
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
     return Command(update={"chart_plan": fixed}, goto="normalize_chart_params")
 
 

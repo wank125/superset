@@ -69,7 +69,7 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:
     The wrapper:
     1. Extracts the current chart intent from parent state
     2. Builds a SingleChartState from parent state fields
-    3. Invokes the child subgraph
+    3. Streams the child subgraph, publishing real-time events to Redis
     4. Maps the child output back to parent state (created_charts accumulation)
     """
 
@@ -91,17 +91,41 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:
             "schema_summary": summary,
             "database_id": state["database_id"],
             "request_id": state.get("request_id", ""),
+            "channel_id": state.get("channel_id", ""),
             "repair_attempts": 0,
             "sql_attempts": 0,
         }
 
-        # Invoke child subgraph
         config: dict[str, Any] = {
             "configurable": {
                 "thread_id": state.get("session_id", "default"),
             },
         }
-        result = subgraph.invoke(child_input, config=config)
+
+        # Stream child subgraph and publish events in real-time
+        channel_id = state.get("channel_id")
+        stream_mgr = None
+        if channel_id:
+            from superset.ai.streaming.manager import AiStreamManager
+
+            stream_mgr = AiStreamManager()
+
+        result: dict[str, Any] = {}
+        for sub_update in subgraph.stream(
+            child_input, config=config, stream_mode="updates",
+        ):
+            if not isinstance(sub_update, dict):
+                continue
+            for child_node, child_output in sub_update.items():
+                if not isinstance(child_output, dict):
+                    continue
+                # Keep track of latest state for each node
+                result.update(child_output)
+                # Publish child node events directly to Redis
+                if stream_mgr:
+                    _publish_child_events(
+                        stream_mgr, channel_id, child_node, child_output,
+                    )
 
         # Map child output back to parent state
         updates: dict[str, Any] = {}
@@ -122,6 +146,24 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:
         return Command(update=updates, goto="after_subgraph")
 
     return subgraph_node
+
+
+def _publish_child_events(
+    stream_mgr: Any,
+    channel_id: str,
+    node_name: str,
+    node_output: dict[str, Any],
+) -> None:
+    """Publish child subgraph node events to the Redis stream.
+
+    Reuses the same progress mapping and event logic as the parent runner
+    so the frontend sees a unified step list.
+    """
+    from superset.ai.graph.runner import _emit_node_events
+
+    # Re-use the parent's event translation logic
+    for event in _emit_node_events(node_name, node_output):
+        stream_mgr.publish_event(channel_id, event)
 
 
 def _after_subgraph_dashboard(

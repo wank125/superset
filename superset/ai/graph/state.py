@@ -78,6 +78,8 @@ class DashboardState(TypedDict, total=False):
     database_id: int
     schema_name: str | None
     agent_mode: str  # "chart" | "dashboard"
+    channel_id: str  # Redis stream channel for real-time event publishing
+    conversation_history: list[dict[str, Any]]  # prior turns for context
 
     # parse_request output
     goal: dict[str, Any]
@@ -113,6 +115,7 @@ class SingleChartState(TypedDict, total=False):
     schema_summary: SchemaSummary
     database_id: int
     request_id: str
+    channel_id: str  # Redis stream channel for retrying events
 
     # plan_query output
     sql_plan: dict[str, Any] | None

@@ -66,7 +66,9 @@ class SearchDatasetsTool(BaseTool):
     def run(self, arguments: dict[str, Any]) -> str:
         table_name = arguments.get("table_name", "")
         if not table_name:
-            return "Error: table_name is required"
+            return json.dumps(
+                {"status": "error", "message": "table_name is required"}
+            )
 
         # Query SqlaTable by database_id + table_name
         query = db.session.query(SqlaTable).filter(
@@ -90,24 +92,38 @@ class SearchDatasetsTool(BaseTool):
                 for t in all_tables
                 if _can_access(t)
             )
-            if not accessible:
-                return (
-                    f"No accessible datasets found for database_id "
-                    f"{self._database_id}."
-                )
-            return (
-                f"Dataset '{table_name}' not found. "
-                f"Available datasets: {', '.join(accessible)}"
+            return json.dumps(
+                {
+                    "status": "not_found",
+                    "message": (
+                        f"No accessible datasets found for database_id "
+                        f"{self._database_id}."
+                        if not accessible
+                        else f"Dataset '{table_name}' not found."
+                    ),
+                    "available_datasets": [
+                        {"table_name": n} for n in accessible
+                    ],
+                },
+                ensure_ascii=False,
             )
 
         # Permission check: only return details for accessible datasources
         try:
             if not security_manager.can_access_datasource(table):
-                return f"Error: You do not have access to dataset '{table_name}'."
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": f"No access to dataset '{table_name}'.",
+                    }
+                )
         except Exception:
-            # If permission check fails (e.g. no request context),
-            # deny access rather than leak data
-            return f"Error: Unable to verify access to dataset '{table_name}'."
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Unable to verify access to dataset '{table_name}'.",
+                }
+            )
 
         # Build column metadata
         columns = [
@@ -129,6 +145,7 @@ class SearchDatasetsTool(BaseTool):
 
         return json.dumps(
             {
+                "status": "found",
                 "datasource_id": table.id,
                 "datasource_type": "table",
                 "table_name": table.table_name,
@@ -138,5 +155,4 @@ class SearchDatasetsTool(BaseTool):
                 "metrics": metrics[:20],
             },
             ensure_ascii=False,
-            indent=2,
         )

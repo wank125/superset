@@ -337,7 +337,7 @@ class TestToolOrderGuard:
 
 
 class TestDashboardAgentOrderEnforcement:
-    """Test legacy path: DashboardAgent.run() blocks out-of-order calls."""
+    """Test legacy path: DashboardAgent blocks out-of-order tool calls via hooks."""
 
     @patch("superset.ai.agent.base.get_max_turns", return_value=5)
     @patch("superset.ai.agent.context.cache_manager")
@@ -378,11 +378,18 @@ class TestDashboardAgentOrderEnforcement:
         )
         events = list(agent.run("create a dashboard"))
 
-        # Should contain an error event for out-of-order call
-        error_events = [e for e in events if e.type == "error"]
-        assert len(error_events) >= 1
-        assert "out of order" in error_events[0].data["message"].lower() or \
-               "before required" in error_events[0].data["message"].lower()
+        # Out-of-order call should be filtered (no tool_call/tool_result events)
+        tool_events = [e for e in events if e.type == "tool_call"]
+        assert len(tool_events) == 0
+
+        # LLM should have been called twice (filtered turn + second response)
+        assert mock_provider.chat_stream.call_count == 2
+
+        # Should end normally with a text response
+        done_events = [e for e in events if e.type == "done"]
+        assert len(done_events) == 1
+        text_events = [e for e in events if e.type == "text_chunk"]
+        assert any("search first" in e.data["content"] for e in text_events)
 
 
 class TestChartIdempotency:

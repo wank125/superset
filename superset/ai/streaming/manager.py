@@ -58,6 +58,7 @@ class AiStreamManager:
     """
 
     _STREAM_LIMIT = 1000
+    _STREAM_TTL = 3600  # auto-expire stream keys after 1 hour
 
     def __init__(self) -> None:
         self._cache = _get_stream_cache()
@@ -74,6 +75,12 @@ class AiStreamManager:
         name = self._stream_name(channel_id)
         payload = {"data": json.dumps(asdict(event))}
         self._cache.xadd(name, payload, "*", self._STREAM_LIMIT)
+        # Auto-expire stream key on terminal events to prevent memory leak
+        if event.type in ("done", "error"):
+            try:
+                self._cache.expire(name, self._STREAM_TTL)
+            except Exception:
+                pass
 
     def read_events(
         self, channel_id: str, last_id: str | None = None

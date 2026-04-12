@@ -103,10 +103,14 @@ class AiChatCommand(BaseCommand):
 
 
 class LegacyAgentRunner(AgentRunner):
-    """Wraps the existing (pre-LangChain) agent instantiation logic.
+    """Wraps the existing (pre-LangChain) agent instantiation logic (legacy).
 
     Provides the same ``run(message) -> Iterator[AgentEvent]`` interface
     as ``LangChainAgentRunner``, so ``runner.py`` can dispatch uniformly.
+
+    .. deprecated::
+        Only used when ``AI_AGENT_USE_LANGCHAIN=False``.  Chart/dashboard
+        creation should use the StateGraph pipeline instead.
     """
 
     def __init__(

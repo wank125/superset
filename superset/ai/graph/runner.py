@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -55,6 +56,8 @@ def run_graph(  # noqa: C901
     database_id: int,
     schema_name: str | None,
     message: str,
+    channel_id: str | None = None,
+    conversation_history: list[dict[str, Any]] | None = None,
 ) -> Iterator[AgentEvent]:
     """Build and execute the StateGraph, yielding real-time AgentEvents."""
     from superset.ai.graph.builder import build_chart_graph, build_dashboard_graph
@@ -74,6 +77,8 @@ def run_graph(  # noqa: C901
         "database_id": database_id,
         "schema_name": schema_name,
         "agent_mode": agent_mode,
+        "channel_id": channel_id or "",
+        "conversation_history": conversation_history or [],
         "created_charts": [],
         "repair_attempts": 0,
         "sql_attempts": 0,
@@ -83,20 +88,44 @@ def run_graph(  # noqa: C901
     }
 
     try:
+        # Collect terminal state for conversation summary
+        created_charts: list[dict[str, Any]] = []
+        created_dashboard: dict[str, Any] | None = None
+        last_error: dict[str, Any] | None = None
+
         # stream_mode="updates" yields after each node completes
+        t_node_start = time.monotonic()
         for state_update in graph.stream(
             initial_state, config=config, stream_mode="updates",
         ):
             if not isinstance(state_update, dict):
                 continue
             for node_name, node_output in state_update.items():
+                elapsed_ms = int((time.monotonic() - t_node_start) * 1000)
+                logger.info(
+                    "graph_node_complete request_id=%s node=%s elapsed_ms=%d",
+                    request_id, node_name, elapsed_ms,
+                )
+                t_node_start = time.monotonic()
                 if isinstance(node_output, dict):
+                    # Track terminal outputs for conversation summary
+                    _acc = node_output.get("created_charts")
+                    if _acc:
+                        created_charts.extend(_acc)
+                    _cd = node_output.get("created_dashboard")
+                    if _cd:
+                        created_dashboard = _cd
+                    _le = node_output.get("last_error")
+                    if isinstance(_le, dict):
+                        last_error = _le
                     yield from _emit_node_events(node_name, node_output)
     except Exception as exc:
         logger.exception("Graph execution failed")
         yield AgentEvent(type="error", data={"message": str(exc)})
 
-    yield AgentEvent(type="done", data={})
+    # Build a conversation summary for multi-turn context
+    summary = _build_summary(message, created_charts, created_dashboard, last_error)
+    yield AgentEvent(type="done", data={"summary": summary})
 
 
 def _emit_node_events(  # noqa: C901
@@ -116,9 +145,7 @@ def _emit_node_events(  # noqa: C901
         for chart in created_charts:
             yield AgentEvent(type="chart_created", data=chart)
         if not created_charts and node_output.get("last_error"):
-            yield AgentEvent(
-                type="error", data=node_output["last_error"],
-            )
+            yield from _emit_last_error(node_output["last_error"])
         return
 
     if node_name == "create_chart":
@@ -126,9 +153,7 @@ def _emit_node_events(  # noqa: C901
         if chart:
             yield AgentEvent(type="chart_created", data=chart)
         elif node_output.get("last_error"):
-            yield AgentEvent(
-                type="error", data=node_output["last_error"],
-            )
+            yield from _emit_last_error(node_output["last_error"])
         return
 
     if node_name == "create_dashboard":
@@ -136,9 +161,7 @@ def _emit_node_events(  # noqa: C901
         if dash:
             yield AgentEvent(type="dashboard_created", data=dash)
         elif node_output.get("last_error"):
-            yield AgentEvent(
-                type="error", data=node_output["last_error"],
-            )
+            yield from _emit_last_error(node_output["last_error"])
         return
 
     if node_name == "validate_sql":
@@ -177,3 +200,40 @@ def _emit_node_events(  # noqa: C901
         _, done_msg = progress
         if done_msg:
             yield AgentEvent(type="thinking", data={"content": done_msg})
+
+
+def _emit_last_error(last_error: dict[str, Any]) -> Iterator[AgentEvent]:
+    """Emit recoverable graph errors without terminating the client stream."""
+    if last_error.get("recoverable"):
+        yield AgentEvent(
+            type="error_fixed",
+            data={"message": f"正在修复: {last_error.get('message', '')[:100]}"},
+        )
+        return
+
+    yield AgentEvent(type="error", data=last_error)
+
+
+def _build_summary(
+    user_message: str,
+    created_charts: list[dict[str, Any]],
+    created_dashboard: dict[str, Any] | None,
+    last_error: dict[str, Any] | None,
+) -> str:
+    """Build a text summary of graph execution for conversation history."""
+    parts: list[str] = []
+    if last_error and not created_charts:
+        return f"任务失败: {last_error.get('message', 'unknown error')}"
+    if created_charts:
+        for c in created_charts:
+            name = c.get("slice_name", "未命名")
+            viz = c.get("viz_type", "unknown")
+            cid = c.get("chart_id", "?")
+            parts.append(f"创建了图表「{name}」(type={viz}, id={cid})")
+    if created_dashboard:
+        title = created_dashboard.get("dashboard_title", "未命名")
+        did = created_dashboard.get("dashboard_id", "?")
+        parts.append(f"创建了仪表板「{title}」(id={did})")
+    if not parts:
+        return "未生成任何图表"
+    return "; ".join(parts)

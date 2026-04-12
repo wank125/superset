@@ -24,7 +24,6 @@ from typing import Any
 from superset.ai.tools.base import BaseTool
 from superset.daos.database import DatabaseDAO
 from superset.extensions import security_manager
-from superset.utils.core import override_user
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +44,24 @@ class GetSchemaTool(BaseTool):
         "properties": {
             "schema_name": {
                 "type": "string",
-                "description": "Schema name to inspect (optional, defaults to the default schema)",
+                "description": (
+                    "Schema name to inspect (optional, defaults to the "
+                    "default schema)"
+                ),
             },
             "table_name": {
                 "type": "string",
-                "description": "Specific table name to inspect (optional, returns all tables if omitted)",
+                "description": (
+                    "Specific table name to inspect (optional, returns all "
+                    "tables if omitted)"
+                ),
+            },
+            "include_columns": {
+                "type": "boolean",
+                "description": (
+                    "Include column metadata when table_name is omitted. "
+                    "Defaults to false to keep table-list responses concise."
+                ),
             },
         },
         "required": [],
@@ -64,6 +76,7 @@ class GetSchemaTool(BaseTool):
     def run(self, arguments: dict[str, Any]) -> str:
         schema_name = arguments.get("schema_name") or self._default_schema
         table_name = arguments.get("table_name")
+        include_columns = bool(arguments.get("include_columns", False))
         database = DatabaseDAO.find_by_id(self._database_id)
         if database is None:
             return f"Error: Database with id={self._database_id} not found."
@@ -75,16 +88,22 @@ class GetSchemaTool(BaseTool):
             return f"Error: Access denied for database '{database.database_name}'"
 
         try:
-            return self._fetch_schema(database, schema_name, table_name)
+            return self._fetch_schema(
+                database,
+                schema_name,
+                table_name,
+                include_columns,
+            )
         except Exception as exc:
             logger.exception("Failed to fetch schema")
             return f"Error fetching schema: {exc}"
 
-    def _fetch_schema(
+    def _fetch_schema(  # noqa: C901
         self,
         database: Any,
         schema_name: str | None,
         table_name: str | None,
+        include_columns: bool = False,
     ) -> str:
         lines: list[str] = []
         catalog = None
@@ -92,7 +111,11 @@ class GetSchemaTool(BaseTool):
         # Determine schema
         if schema_name is None:
             with database.get_inspector(catalog=catalog) as inspector:
-                schemas = inspector.get_schema_names() if hasattr(inspector, "get_schema_names") else [None]
+                schemas = (
+                    inspector.get_schema_names()
+                    if hasattr(inspector, "get_schema_names")
+                    else [None]
+                )
             # Prefer 'public' over system schemas (information_schema, pg_catalog, etc.)
             if schemas:
                 schema_name = next(
@@ -104,10 +127,16 @@ class GetSchemaTool(BaseTool):
 
         # Get table names
         try:
-            with database.get_inspector(catalog=catalog, schema=schema_name) as inspector:
+            with database.get_inspector(
+                catalog=catalog,
+                schema=schema_name,
+            ) as inspector:
                 all_table_names = list(inspector.get_table_names(schema=schema_name))
         except Exception:
-            with database.get_inspector(catalog=catalog, schema=schema_name) as inspector:
+            with database.get_inspector(
+                catalog=catalog,
+                schema=schema_name,
+            ) as inspector:
                 all_table_names = list(inspector.get_table_names(schema=schema_name))
 
         if table_name:
@@ -130,6 +159,17 @@ class GetSchemaTool(BaseTool):
         truncated = len(table_names) > _MAX_TABLES
         table_names = table_names[:_MAX_TABLES]
 
+        header = f"Database: {database.database_name}"
+        if schema_name:
+            header += f", Schema: {schema_name}"
+
+        if not table_name and not include_columns:
+            lines.append(f"Tables ({len(table_names)}):")
+            lines.extend(f"- {tbl}" for tbl in sorted(table_names))
+            if truncated:
+                lines.append(f"... and more tables (showing first {_MAX_TABLES})")
+            return header + "\n\n" + "\n".join(lines)
+
         # Fetch column info for each table
         with database.get_inspector(catalog=catalog, schema=schema_name) as inspector:
             for tbl in table_names:
@@ -146,7 +186,8 @@ class GetSchemaTool(BaseTool):
                     nullable = "NULL" if col.get("nullable", True) else "NOT NULL"
                     col_lines.append(f"  - {col_name} {col_type} {nullable}")
                 if len(columns) > _MAX_COLUMNS_PER_TABLE:
-                    col_lines.append(f"  ... and {len(columns) - _MAX_COLUMNS_PER_TABLE} more columns")
+                    extra_cols = len(columns) - _MAX_COLUMNS_PER_TABLE
+                    col_lines.append(f"  ... and {extra_cols} more columns")
 
                 lines.append(f"TABLE: {tbl}")
                 lines.extend(col_lines)
@@ -155,7 +196,4 @@ class GetSchemaTool(BaseTool):
         if truncated:
             lines.append(f"... and more tables (showing first {_MAX_TABLES})")
 
-        header = f"Database: {database.database_name}"
-        if schema_name:
-            header += f", Schema: {schema_name}"
         return header + "\n\n" + "\n".join(lines)

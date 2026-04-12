@@ -14,7 +14,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Base agent with ReAct reasoning loop."""
+"""Base agent with ReAct reasoning loop (legacy).
+
+.. deprecated::
+    The ReAct agents (NL2SQLAgent, ChartAgent, etc.) are retained for
+    the ``LegacyAgentRunner`` path.  Chart/dashboard creation now uses
+    the StateGraph pipeline (``superset.ai.graph``).
+"""
 
 from __future__ import annotations
 
@@ -38,6 +44,11 @@ class BaseAgent(ABC):
     2. Call LLM (streaming)
     3. If the LLM requests tool calls, execute them and feed results back
     4. Repeat until the LLM returns a final answer or max turns reached
+
+    Subclasses can customise the loop via hook methods:
+    - ``_on_run_start()`` — called once before the loop
+    - ``_pre_tool_execution()`` — filter/augment tool calls before execution
+    - ``_on_tool_executed()`` — called after each successful tool call
     """
 
     def __init__(
@@ -82,8 +93,33 @@ class BaseAgent(ABC):
         tail = accumulated[-30:]
         return accumulated.count(tail) >= self._MAX_REPETITIONS
 
+    # ── Hook methods (override in subclasses) ────────────────────────
+
+    def _on_run_start(self) -> None:
+        """Called once at the start of ``run()``. Override to initialise state."""
+
+    def _pre_tool_execution(
+        self,
+        tool_calls: list[dict[str, Any]],
+        messages: list[LLMMessage],
+        turn_content: str,
+    ) -> tuple[list[dict[str, Any]], list[LLMMessage]]:
+        """Filter tool calls before execution.
+
+        Returns ``(filtered_calls, extra_messages)`` where *extra_messages*
+        are appended to *messages* alongside the filtered assistant message.
+        """
+        return tool_calls, []
+
+    def _on_tool_executed(self, tool_name: str) -> None:
+        """Called after a tool call is executed successfully."""
+
+    # ── Main ReAct loop ──────────────────────────────────────────────
+
     def run(self, user_message: str) -> Iterator[AgentEvent]:
         """Execute the ReAct loop and yield events."""
+        self._on_run_start()
+
         messages = [
             LLMMessage(role="system", content=self.get_system_prompt())
         ]
@@ -160,6 +196,18 @@ class BaseAgent(ABC):
                 # LLM returned a final answer
                 break
 
+            # Hook: let subclasses filter / intercept tool calls
+            turn_text = "".join(turn_content_parts)
+            filtered_calls, extra_messages = self._pre_tool_execution(
+                tool_calls_acc, messages, turn_text,
+            )
+            tool_calls_acc = filtered_calls
+
+            if not tool_calls_acc:
+                # All calls were filtered out — continue to next turn
+                messages.extend(extra_messages)
+                continue
+
             # Append the assistant message with tool_calls before tool results
             # (required by OpenAI/Anthropic chat APIs)
             assistant_tool_calls = [
@@ -173,13 +221,15 @@ class BaseAgent(ABC):
             messages.append(
                 LLMMessage(
                     role="assistant",
-                    content="".join(turn_content_parts) or None,
+                    content=turn_text or None,
                     tool_calls=assistant_tool_calls,
                 )
             )
 
             # Execute each tool call
             for tc in tool_calls_acc:
+                self._on_tool_executed(tc["name"])
+
                 yield AgentEvent(
                     type="tool_call",
                     data={"tool": tc["name"], "args": tc["arguments"]},
@@ -200,6 +250,11 @@ class BaseAgent(ABC):
                     type="tool_result",
                     data={"tool": tc["name"], "result": result},
                 )
+
+            # Append blocked-tool messages after all tool results so the
+            # assistant→tool→assistant→tool sequence required by chat APIs
+            # is not violated.
+            messages.extend(extra_messages)
 
         # Save assistant response to context
         full_response = "".join(assistant_content_parts)

@@ -14,4 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""LangChain-based agent implementation."""
+"""LangChain-based agent implementation (legacy).
+
+.. deprecated::
+    This module is superseded by the LangGraph StateGraph path
+    (``superset.ai.graph``).  It is retained for backward compatibility
+    when ``AI_AGENT_USE_LANGCHAIN=True`` and agent_type is ``nl2sql``
+    or ``debug``.  New development should target the StateGraph pipeline.
+"""
