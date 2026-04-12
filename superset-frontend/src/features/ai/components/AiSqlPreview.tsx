@@ -66,7 +66,7 @@ const CopyButton = styled.button`
 
 function extractSqlFromMarkdown(text: string): string | null {
   // Extract SQL from markdown code blocks: ```sql ... ```
-  const match = text.match(/```(?:sql)?\s*\n([\s\S]*?)```/);
+  const match = text.match(/```sql\s*\n([\s\S]*?)```/i);
   return match ? match[1].trim() : null;
 }
 

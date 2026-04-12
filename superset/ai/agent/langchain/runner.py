@@ -26,6 +26,10 @@ from typing import Any
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
+from superset.ai.agent.confirmation import (
+    is_creation_confirmed,
+    is_side_effect_tool,
+)
 from superset.ai.agent.events import AgentEvent
 from superset.ai.agent.langchain.callbacks import SafeguardCallbackHandler
 from superset.ai.agent.langchain.guard import (
@@ -185,8 +189,15 @@ class LangChainAgentRunner(AgentRunner):
         native_tools = _instantiate_tools(
             self._agent_type, self._database_id, self._schema_name
         )
+        confirmed = is_creation_confirmed(message)
         lc_tools = [
-            tool_adapter(t, order_guard=self._order_guard) for t in native_tools
+            tool_adapter(
+                t,
+                order_guard=self._order_guard,
+                requires_confirmation=is_side_effect_tool(t.name),
+                confirmed=confirmed,
+            )
+            for t in native_tools
         ]
         memory = self._get_memory()
         prompt = prompt_adapter(self._agent_type, self._schema_name)

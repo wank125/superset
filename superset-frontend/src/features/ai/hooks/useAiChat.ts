@@ -74,6 +74,7 @@ export function useAiChat(
   const streamingTextRef = useRef('');
   // Track step labels to avoid duplicates
   const stepLabelsRef = useRef<Set<string>>(new Set());
+  const stepsRef = useRef<AiStep[]>([]);
   // Track latest results via refs so finalize() can read them synchronously
   const chartResultsRef = useRef<ChartResult[]>([]);
   const dashboardResultRef = useRef<DashboardResult | null>(null);
@@ -95,13 +96,15 @@ export function useAiChat(
     ) => {
       // Deduplicate by label — update existing step status instead of appending
       if (stepLabelsRef.current.has(label)) {
-        setSteps(prev =>
-          prev.map(s =>
+        setSteps(prev => {
+          const next = prev.map(s =>
             s.label === label
               ? { ...s, status, detail: detail ?? s.detail }
               : s,
-          ),
-        );
+          );
+          stepsRef.current = next;
+          return next;
+        });
         return;
       }
       stepLabelsRef.current.add(label);
@@ -113,23 +116,39 @@ export function useAiChat(
         status,
         detail,
       };
-      setSteps(prev => [...prev, step]);
+      setSteps(prev => {
+        const next = [...prev, step];
+        stepsRef.current = next;
+        return next;
+      });
     },
     [],
   );
 
-  const markAllRunningDone = useCallback(() => {
-    setSteps(prev =>
-      prev.map(s =>
-        s.status === 'running' ? { ...s, status: 'done' as const } : s,
-      ),
+  const markAllRunningDone = useCallback((): AiStep[] => {
+    const next = stepsRef.current.map(s =>
+      s.status === 'running' ? { ...s, status: 'done' as const } : s,
     );
+    stepsRef.current = next;
+    setSteps(next);
+    return next;
   }, []);
+
+  const createAssistantMessage = useCallback(
+    (content: string, finalSteps: AiStep[]): AiChatMessage => ({
+      role: 'assistant' as const,
+      content: appendSqlResult(content, latestSqlResultRef.current),
+      timestamp: Date.now(),
+      steps: finalSteps.length > 0 ? finalSteps : undefined,
+    }),
+    [],
+  );
 
   const resetState = useCallback(() => {
     streamingTextRef.current = '';
     setStreamingText('');
     setSteps([]);
+    stepsRef.current = [];
     setChartResults([]);
     chartResultsRef.current = [];
     setDashboardResult(null);
@@ -141,15 +160,12 @@ export function useAiChat(
 
   const finalize = useCallback(
     (accumulated: string) => {
+      const finalSteps = markAllRunningDone();
       // If we have text chunks, use them as the assistant message
       if (accumulated) {
         setMessages(msgs => [
           ...msgs,
-          {
-            role: 'assistant' as const,
-            content: appendSqlResult(accumulated, latestSqlResultRef.current),
-            timestamp: Date.now(),
-          },
+          createAssistantMessage(accumulated, finalSteps),
         ]);
       } else {
         // StateGraph path: no text_chunk events, generate summary from results
@@ -173,32 +189,20 @@ export function useAiChat(
           }
           setMessages(msgs => [
             ...msgs,
-            {
-              role: 'assistant' as const,
-              content: appendSqlResult(
-                lines.join('\n'),
-                latestSqlResultRef.current,
-              ),
-              timestamp: Date.now(),
-            },
+            createAssistantMessage(lines.join('\n'), finalSteps),
           ]);
         } else if (latestSqlResultRef.current) {
           setMessages(msgs => [
             ...msgs,
-            {
-              role: 'assistant' as const,
-              content: appendSqlResult('', latestSqlResultRef.current),
-              timestamp: Date.now(),
-            },
+            createAssistantMessage('', finalSteps),
           ]);
         }
       }
-      markAllRunningDone();
       streamingTextRef.current = '';
       setStreamingText('');
       setLoading(false);
     },
-    [markAllRunningDone],
+    [createAssistantMessage, markAllRunningDone],
   );
 
   const pollEvents = useCallback(
@@ -240,9 +244,11 @@ export function useAiChat(
                     );
                   if (idx === -1) return prev;
                   const realIdx = prev.length - 1 - idx;
-                  return prev.map((s, i) =>
+                  const next = prev.map((s, i) =>
                     i === realIdx ? { ...s, status: 'done' as const } : s,
                   );
+                  stepsRef.current = next;
+                  return next;
                 });
                 break;
               }
@@ -293,6 +299,11 @@ export function useAiChat(
                   'done',
                   'dashboard_created',
                 );
+                break;
+              }
+              case 'intent_routed': {
+                const routedAgent = (event.data.agent as string) || 'nl2sql';
+                addStep(`自动路由: ${routedAgent}`, 'done', 'intent_routed');
                 break;
               }
               case 'error_fixed': {

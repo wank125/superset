@@ -28,6 +28,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import Any
 
+from superset.ai.agent.confirmation import (
+    confirmation_required_message,
+    is_creation_confirmed,
+    is_side_effect_tool,
+)
 from superset.ai.agent.context import ConversationContext
 from superset.ai.agent.events import AgentEvent
 from superset.ai.config import get_max_turns
@@ -207,6 +212,27 @@ class BaseAgent(ABC):
             if not tool_calls_acc:
                 # LLM returned a final answer
                 break
+
+            blocked_calls = [
+                tc
+                for tc in tool_calls_acc
+                if is_side_effect_tool(tc["name"])
+                and not is_creation_confirmed(user_message)
+            ]
+            if blocked_calls:
+                blocked_tool = blocked_calls[0]["name"]
+                confirmation_message = confirmation_required_message(
+                    blocked_tool
+                )
+                assistant_content_parts.append(confirmation_message)
+                yield AgentEvent(
+                    type="text_chunk",
+                    data={"content": confirmation_message},
+                )
+                full_response = "".join(assistant_content_parts)
+                self._context.add_message("assistant", full_response)
+                yield AgentEvent(type="done", data={})
+                return
 
             # Hook: let subclasses filter / intercept tool calls
             turn_text = "".join(turn_content_parts)

@@ -102,6 +102,12 @@ class DashboardState(TypedDict, total=False):
     # create_dashboard output
     created_dashboard: dict[str, Any] | None
 
+    # Phase 17: clarification state
+    clarify_question: str | None
+    clarify_type: str | None           # "dataset_selection" | "general"
+    clarify_options: list[dict] | None  # [{"label", "value", "description"}]
+    answer_prefix: str | None          # 供上下文参考
+
     # Error tracking
     last_error: dict[str, Any] | None
 

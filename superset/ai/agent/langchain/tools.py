@@ -24,6 +24,7 @@ from typing import Any, TYPE_CHECKING
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, create_model
 
+from superset.ai.agent.confirmation import confirmation_required_message
 from superset.ai.tools.base import BaseTool
 
 if TYPE_CHECKING:
@@ -65,6 +66,8 @@ def _schema_to_pydantic(schema: dict[str, Any]) -> type[BaseModel]:
 def tool_adapter(
     native_tool: BaseTool,
     order_guard: ToolOrderGuard | None = None,
+    requires_confirmation: bool = False,
+    confirmed: bool = False,
 ) -> StructuredTool:
     """Wrap a Superset BaseTool as a LangChain StructuredTool.
 
@@ -77,6 +80,17 @@ def tool_adapter(
     tool_name = native_tool.name
 
     def _run(**kwargs: Any) -> str:
+        if requires_confirmation and not confirmed:
+            logger.info(
+                "Confirmation gate blocked '%s' with args=%s",
+                tool_name,
+                kwargs,
+            )
+            return (
+                f"Error: {confirmation_required_message(tool_name)} "
+                "Do not call this tool again in the same turn."
+            )
+
         # Order guard: block execution if tool is called out of sequence.
         # This runs *inside* LangGraph's tool execution, so it actually
         # prevents side effects — unlike checking in the stream handler.

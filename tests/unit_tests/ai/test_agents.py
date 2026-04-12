@@ -374,6 +374,53 @@ class TestToolOrderGuard:
         assert result.startswith("Error:")
         assert native_tool.called is False
 
+    def test_tool_adapter_requires_confirmation_for_side_effect(self):
+        from superset.ai.agent.langchain.tools import tool_adapter
+        from superset.ai.tools.base import BaseTool
+
+        class CreateChartTool(BaseTool):
+            name = "create_chart"
+            description = "Create chart"
+            parameters_schema = {"type": "object", "properties": {}}
+
+            def __init__(self):
+                self.called = False
+
+            def run(self, arguments):
+                self.called = True
+                return "created"
+
+        native_tool = CreateChartTool()
+        wrapped = tool_adapter(
+            native_tool,
+            requires_confirmation=True,
+            confirmed=False,
+        )
+
+        result = wrapped.invoke({})
+
+        assert "需要你确认" in result
+        assert native_tool.called is False
+
+        confirmed_tool = CreateChartTool()
+        confirmed_wrapped = tool_adapter(
+            confirmed_tool,
+            requires_confirmation=True,
+            confirmed=True,
+        )
+
+        assert confirmed_wrapped.invoke({}) == "created"
+        assert confirmed_tool.called is True
+
+    def test_creation_confirmation_detection(self):
+        from superset.ai.agent.confirmation import is_creation_confirmed
+
+        assert is_creation_confirmed("确认创建")
+        assert is_creation_confirmed("go ahead")
+        assert is_creation_confirmed("可以创建这个仪表板")
+        assert not is_creation_confirmed("创建销售仪表盘")
+        assert not is_creation_confirmed("不要创建")
+
 
 class TestToolSummaryInReActLoop:
     """Test that tool summaries are collected and persisted during the ReAct loop."""
@@ -473,7 +520,7 @@ class TestToolSummaryInReActLoop:
                 return "test"
 
         agent = TestAgent(mock_provider, context, tools=[])
-        events = list(agent.run("now filter by male"))
+        list(agent.run("now filter by male"))
 
         # Verify messages sent to LLM include system-injected tool_summary
         call_args = mock_provider.chat_stream.call_args

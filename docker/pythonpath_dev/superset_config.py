@@ -111,6 +111,7 @@ FEATURE_FLAGS = {
     "AI_AGENT_DEBUG": True,
     "AI_AGENT_DASHBOARD": True,
     "AI_AGENT_COPILOT": True,
+    "AI_AGENT_AUTO_ROUTE": True,
 }
 
 # Guest Token JWT Configuration

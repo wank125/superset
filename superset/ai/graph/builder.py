@@ -206,7 +206,7 @@ def _after_subgraph_chart(
     )
 
 
-def build_dashboard_graph() -> Any:
+def build_dashboard_graph(checkpointer: Any = None) -> Any:
     """Parent graph: full dashboard generation flow."""
     from superset.ai.graph import nodes_parent as parent
 
@@ -217,6 +217,7 @@ def build_dashboard_graph() -> Any:
     b.add_node("parse_request", parent.parse_request)
     b.add_node("search_dataset", parent.search_dataset)
     b.add_node("select_dataset", parent.select_dataset)
+    b.add_node("clarify_user", parent.clarify_user)
     b.add_node("read_schema", parent.read_schema)
     b.add_node("plan_dashboard", parent.plan_dashboard)
     b.add_node("single_chart_subgraph", subgraph_node)
@@ -228,10 +229,10 @@ def build_dashboard_graph() -> Any:
     b.add_edge(START, "parse_request")
     # All other edges are determined by Command(goto=...) inside nodes
 
-    return b.compile()
+    return b.compile(checkpointer=checkpointer)
 
 
-def build_chart_graph() -> Any:
+def build_chart_graph(checkpointer: Any = None) -> Any:
     """Single-chart mode: includes plan_dashboard but skips create_dashboard."""
     from superset.ai.graph import nodes_parent as parent
 
@@ -242,6 +243,7 @@ def build_chart_graph() -> Any:
     b.add_node("parse_request", parent.parse_request)
     b.add_node("search_dataset", parent.search_dataset)
     b.add_node("select_dataset", parent.select_dataset)
+    b.add_node("clarify_user", parent.clarify_user)
     b.add_node("read_schema", parent.read_schema)
     b.add_node("plan_dashboard", parent.plan_dashboard)
     b.add_node("single_chart_subgraph", subgraph_node)
@@ -250,4 +252,4 @@ def build_chart_graph() -> Any:
     )
 
     b.add_edge(START, "parse_request")
-    return b.compile()
+    return b.compile(checkpointer=checkpointer)

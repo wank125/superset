@@ -82,6 +82,29 @@ class ConversationContext:
     def clear(self) -> None:
         self._cache().delete(self._key)
 
+    def add_router_meta(
+        self,
+        agent: str,
+        confidence: float,
+        method: str,
+        message: str,
+    ) -> None:
+        """Store routing decision for next-turn context awareness.
+
+        Stored with ``role="router_meta"``, excluded from LLM message list.
+        Only the most recent entry is kept.
+        """
+        history = self.get_history()
+        history = [h for h in history if h.get("role") != "router_meta"]
+        history.append({
+            "role": "router_meta",
+            "agent": agent,
+            "confidence": confidence,
+            "method": method,
+            "message": message[:200],
+        })
+        self._cache().set(self._key, json.dumps(history), timeout=_CONTEXT_TTL)
+
     def add_tool_summary(self, tool_name: str, content: str) -> None:
         """Record a key tool execution result for next-turn context.
 

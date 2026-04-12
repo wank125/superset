@@ -25,6 +25,7 @@ import { Icons } from '@superset-ui/core/components/Icons';
 import { Radio, RadioChangeEvent } from '@superset-ui/core/components/Radio';
 
 const AGENT_MODES = [
+  { label: 'Auto', value: 'auto' },
   { label: 'SQL', value: 'nl2sql' },
   { label: 'Chart', value: 'chart' },
   { label: 'Dashboard', value: 'dashboard' },

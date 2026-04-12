@@ -131,6 +131,7 @@ export function AiWorkspaceContent({
 
   const latestChart =
     chartResults.length > 0 ? chartResults[chartResults.length - 1] : null;
+  const hasSqlBlock = (text: string) => /```sql\s*\n[\s\S]*?```/i.test(text);
 
   return (
     <ContentArea>
@@ -144,9 +145,12 @@ export function AiWorkspaceContent({
         {messages.map((msg, idx) => (
           <div key={msg.timestamp}>
             <AiMessageBubble message={msg} />
+            {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
+              <AiStepProgress steps={msg.steps} />
+            )}
             {msg.role === 'assistant' && idx === messages.length - 1 && (
               <>
-                {agentType === 'nl2sql' && (
+                {agentType === 'nl2sql' && !hasSqlBlock(msg.content) && (
                   <AiSqlPreview sql={msg.content} onCopyToEditor={onSqlCopy} />
                 )}
                 {(agentType === 'chart' || agentType === 'dashboard') &&
@@ -212,7 +216,7 @@ export function AiWorkspaceContent({
             )}
           </div>
         ))}
-        {steps.length > 0 && <AiStepProgress steps={steps} />}
+        {loading && steps.length > 0 && <AiStepProgress steps={steps} />}
         {loading && streamingText && <AiStreamingText text={streamingText} />}
         {loading && !streamingText && steps.length === 0 && (
           <AiStreamingText text={t('思考中...')} />

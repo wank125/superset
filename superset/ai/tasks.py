@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from superset.ai.agent.confirmation import is_creation_confirmed
 from superset.ai.agent.events import AgentEvent
 from superset.ai.config import get_agent_timeout
 from superset.extensions import celery_app
@@ -68,7 +69,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
     message = kwargs["message"]
     database_id = kwargs.get("database_id")
     schema_name = kwargs.get("schema_name")
-    agent_type = kwargs.get("agent_type", "nl2sql")
+    agent_type = kwargs.get("agent_type", "auto")
     session_id = kwargs.get("session_id", channel_id)
 
     stream = AiStreamManager()
@@ -85,6 +86,92 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
         _cleanup_db_session(dispose_engine=True)
         user = security_manager.get_user_by_id(user_id) if user_id else None
         with override_user(user):
+            # ── Phase 16: Intent routing ──────────────────────────────
+            if agent_type == "auto":
+                from superset import is_feature_enabled
+
+                if is_feature_enabled("AI_AGENT_AUTO_ROUTE"):
+                    from superset.ai.agent.context import ConversationContext
+                    from superset.ai.router.router import IntentRouter
+                    from superset.ai.router.types import RouterContext
+
+                    ctx = ConversationContext(
+                        user_id=user_id, session_id=session_id
+                    )
+                    history = ctx.get_history()
+                    last_meta = next(
+                        (
+                            h
+                            for h in reversed(history)
+                            if h.get("role") == "router_meta"
+                        ),
+                        None,
+                    )
+                    router_ctx = RouterContext(
+                        last_agent=last_meta.get("agent") if last_meta else None,
+                        last_message=(
+                            last_meta.get("message") if last_meta else None
+                        ),
+                        session_id=session_id,
+                        user_id=user_id,
+                    )
+
+                    decision = IntentRouter().route(
+                        message=message, context=router_ctx
+                    )
+                    agent_type = decision.agent
+
+                    # P1 fix: re-check routed agent against its feature flag
+                    _GATED: dict[str, str] = {
+                        "chart": "AI_AGENT_CHART",
+                        "debug": "AI_AGENT_DEBUG",
+                        "dashboard": "AI_AGENT_DASHBOARD",
+                        "copilot": "AI_AGENT_COPILOT",
+                    }
+                    if agent_type in _GATED and not is_feature_enabled(
+                        _GATED[agent_type]
+                    ):
+                        logger.warning(
+                            "Routed to %s but flag %s is off, falling back to nl2sql",
+                            agent_type,
+                            _GATED[agent_type],
+                        )
+                        agent_type = "nl2sql"
+
+                    # Persist routing decision for next-turn context.
+                    ctx.add_router_meta(
+                        agent=decision.agent,
+                        confidence=decision.confidence,
+                        method=decision.method,
+                        message=message,
+                    )
+
+                    # Notify frontend of the routing decision.
+                    stream.publish_event(
+                        channel_id,
+                        AgentEvent(
+                            type="intent_routed",
+                            data={
+                                "agent": decision.agent,
+                                "confidence": round(decision.confidence, 2),
+                                "method": decision.method,
+                            },
+                        ),
+                    )
+
+                    logger.info(
+                        "intent_routed agent=%s confidence=%.2f method=%s "
+                        "session=%s",
+                        decision.agent,
+                        decision.confidence,
+                        decision.method,
+                        session_id,
+                    )
+                else:
+                    # Feature flag off — safe downgrade.
+                    agent_type = "nl2sql"
+            # ── End Phase 16 ─────────────────────────────────────────
+
             # Path selection (priority order):
             # 1. StateGraph pipeline (use_stategraph=True + chart/dashboard)
             #    → superset.ai.graph.runner.run_graph
@@ -100,6 +187,33 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 # Read conversation history for multi-turn context
                 ctx = ConversationContext(user_id=user_id, session_id=session_id)
                 ctx.add_message("user", message)
+
+                if not is_creation_confirmed(message):
+                    target = "图表" if agent_type == "chart" else "仪表板"
+                    confirmation_message = (
+                        f"我可以帮你创建{target}，但需要你先确认。"
+                        f"我还没有执行任何创建操作。请回复“确认创建{target}”后我再继续。"
+                    )
+                    stream.publish_event(
+                        channel_id,
+                        AgentEvent(
+                            type="text_chunk",
+                            data={"content": confirmation_message},
+                        ),
+                    )
+                    stream.publish_event(
+                        channel_id,
+                        AgentEvent(type="done", data={}),
+                    )
+                    ctx.add_message("assistant", confirmation_message)
+                    logger.info(
+                        "creation_confirmation_required request_id=%s "
+                        "agent_type=%s session_id=%s",
+                        channel_id,
+                        agent_type,
+                        session_id,
+                    )
+                    return channel_id
 
                 events = run_graph(
                     agent_mode=agent_type,

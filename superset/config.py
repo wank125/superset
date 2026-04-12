@@ -509,6 +509,8 @@ DEFAULT_FEATURE_FLAGS: dict[str, bool] = {
     "AI_AGENT_DEBUG": False,
     "AI_AGENT_DASHBOARD": False,
     "AI_AGENT_COPILOT": False,
+    "AI_AGENT_AUTO_ROUTE": False,
+    "AI_AGENT_CHECKPOINTER": False,
     # Allow for javascript controls components
     # this enables programmers to customize certain charts (like the
     # geospatial ones) by inputting javascript in controls. This exposes

@@ -34,6 +34,7 @@ const AgentModeGroup = styled.div`
 `;
 
 const AGENT_MODES = [
+  { label: 'Auto', value: 'auto' },
   { label: 'SQL', value: 'nl2sql' },
   { label: 'Chart', value: 'chart' },
   { label: 'Dashboard', value: 'dashboard' },
@@ -47,19 +48,20 @@ export function AiNewSessionModal({
   onCancel,
 }: AiNewSessionModalProps) {
   const [selectedDb, setSelectedDb] = useState<number | undefined>(undefined);
-  const [agentType, setAgentType] = useState('nl2sql');
+  const [agentType, setAgentType] = useState('auto');
 
   const isCopilot = agentType === 'copilot';
+  const isAuto = agentType === 'auto';
 
   const handlePrimaryAction = () => {
     onCreate(selectedDb ?? null, agentType);
     setSelectedDb(undefined);
-    setAgentType('nl2sql');
+    setAgentType('auto');
   };
 
   const handleHide = () => {
     setSelectedDb(undefined);
-    setAgentType('nl2sql');
+    setAgentType('auto');
     onCancel();
   };
 
@@ -76,7 +78,7 @@ export function AiNewSessionModal({
       onHide={handleHide}
       onHandledPrimaryAction={handlePrimaryAction}
       primaryButtonName={t('创建')}
-      disablePrimaryButton={!isCopilot && selectedDb === undefined}
+      disablePrimaryButton={!isCopilot && !isAuto && selectedDb === undefined}
       destroyOnHidden
     >
       <AgentModeGroup>

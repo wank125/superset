@@ -20,6 +20,7 @@ Nodes:
   P1 parse_request      [LLM]
   P2 search_dataset     [Code]
   P3 select_dataset     [Code]
+  P3b clarify_user      [Code]
   P4 read_schema        [Code]
   P5 plan_dashboard     [LLM]
   P6 create_dashboard   [Code]
@@ -257,13 +258,26 @@ def search_dataset(
 
 def select_dataset(  # noqa: C901
     state: DashboardState,
-) -> Command[Literal["read_schema", "search_dataset"]]:
+) -> Command[Literal["read_schema", "search_dataset", "clarify_user", "__end__"]]:
     candidates = state.get("dataset_candidates", [])
     target = (state.get("goal", {}) or {}).get("target_table") or ""
     target = target.lower()
 
-    # No candidates → return error
+    # No candidates → ask user to pick from all available datasets
     if not candidates:
+        all_datasets = _get_all_accessible_datasets(state["database_id"])
+        if all_datasets:
+            return Command(
+                update={
+                    "clarify_question": "未找到匹配的数据集，当前数据库有以下可用表：",
+                    "clarify_type": "dataset_selection",
+                    "clarify_options": [
+                        {"label": d, "value": d} for d in all_datasets[:10]
+                    ],
+                    "answer_prefix": f"{state['request']}，使用数据集 {{value}}",
+                },
+                goto="clarify_user",
+            )
         return Command(
             update={
                 "last_error": {
@@ -321,18 +335,22 @@ def select_dataset(  # noqa: C901
 
     # Require a minimum score to avoid selecting an unrelated dataset
     if best_score == 0:
+        options = [
+            {
+                "label": c.get("table_name", str(c)),
+                "value": c.get("table_name", str(c)),
+                "description": c.get("description", ""),
+            }
+            for c in candidates[:8]
+        ]
         return Command(
             update={
-                "last_error": {
-                    "type": "no_dataset",
-                    "message": (
-                        f"未找到与「{target}」匹配的数据集，"
-                        f"请指定准确的表名"
-                    ),
-                    "recoverable": False,
-                },
+                "clarify_question": "找到多个可能的数据集，请选择：",
+                "clarify_type": "dataset_selection",
+                "clarify_options": options,
+                "answer_prefix": f"{state['request']}，使用数据集 {{value}}",
             },
-            goto="__end__",
+            goto="clarify_user",
         )
 
     # Auto-select the best match (interrupt requires checkpointer
@@ -358,6 +376,66 @@ def select_dataset(  # noqa: C901
         update={"selected_dataset": selected},
         goto="read_schema",
     )
+
+
+def _get_all_accessible_datasets(database_id: int) -> list[str]:
+    """Return table names for all datasets in the given database."""
+    try:
+        from superset.connectors.sqla.models import SqlaTable
+
+        from superset import db
+
+        tables = (
+            db.session.query(SqlaTable.table_name)
+            .filter(SqlaTable.database_id == database_id)
+            .order_by(SqlaTable.table_name)
+            .limit(10)
+            .all()
+        )
+        return [t.table_name for t in tables]
+    except Exception:
+        logger.warning("Failed to list datasets for database %s", database_id)
+        return []
+
+
+# ── Node P3b: clarify_user [Code] ───────────────────────────────────
+
+
+def clarify_user(
+    state: DashboardState,
+) -> Command[Literal["__end__"]]:
+    """Publish a clarification message and end the graph gracefully.
+
+    Uses ``text_chunk`` event so the existing frontend renders it as
+    a normal assistant reply — no special UI needed.
+    """
+    from superset.ai.agent.events import AgentEvent
+    from superset.ai.streaming.manager import AiStreamManager
+
+    question = state.get("clarify_question", "请补充信息：")
+    options = state.get("clarify_options") or []
+
+    # Build natural-language clarification text
+    lines = [question]
+    for i, opt in enumerate(options, 1):
+        label = opt.get("label", "")
+        desc = opt.get("description", "")
+        if desc:
+            lines.append(f"  {i}. {label} ({desc})")
+        else:
+            lines.append(f"  {i}. {label}")
+    lines.append("请告诉我你想用哪个？")
+    text = "\n".join(lines)
+
+    channel_id = state.get("channel_id")
+    if channel_id:
+        stream = AiStreamManager()
+        stream.publish_event(
+            channel_id,
+            AgentEvent(type="text_chunk", data={"content": text}),
+        )
+
+    return Command(update={"last_error": None}, goto="__end__")
 
 
 # ── Node P4: read_schema [Code] ────────────────────────────────────

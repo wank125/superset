@@ -97,34 +97,22 @@ class AiAgentRestApi(BaseSupersetApi):
         if errors:
             return self.response_400(message=str(errors))
 
-        # Enforce per-agent feature flags
-        agent_type = body.get("agent_type", "nl2sql")
-        if agent_type == "chart" and not is_feature_enabled(
-            "AI_AGENT_CHART"
-        ):
-            return self.response_400(
-                message="Chart agent is not enabled. Enable AI_AGENT_CHART feature flag."
-            )
-        if agent_type == "debug" and not is_feature_enabled(
-            "AI_AGENT_DEBUG"
-        ):
-            return self.response_400(
-                message="Debug agent is not enabled. Enable AI_AGENT_DEBUG feature flag."
-            )
-        if agent_type == "dashboard" and not is_feature_enabled(
-            "AI_AGENT_DASHBOARD"
-        ):
-            return self.response_400(
-                message="Dashboard agent is not enabled. Enable AI_AGENT_DASHBOARD feature flag."
-            )
-        if agent_type == "copilot" and not is_feature_enabled(
-            "AI_AGENT_COPILOT"
-        ):
-            return self.response_400(
-                message="Copilot agent is not enabled. Enable AI_AGENT_COPILOT feature flag."
-            )
+        # Enforce per-agent feature flags (auto/nl2sql need no extra flag)
+        agent_type = body.get("agent_type", "auto")
+        _GATED_AGENTS: dict[str, str] = {
+            "chart": "AI_AGENT_CHART",
+            "debug": "AI_AGENT_DEBUG",
+            "dashboard": "AI_AGENT_DASHBOARD",
+            "copilot": "AI_AGENT_COPILOT",
+        }
+        if agent_type in _GATED_AGENTS:
+            flag = _GATED_AGENTS[agent_type]
+            if not is_feature_enabled(flag):
+                return self.response_400(
+                    message=f"{agent_type} agent is not enabled. Enable {flag} feature flag."
+                )
 
-        # Non-copilot agents require database_id
+        # database_id is required unless the user explicitly chose copilot
         if agent_type != "copilot" and not body.get("database_id"):
             return self.response_400(
                 message="database_id is required for non-copilot agents."
@@ -140,7 +128,7 @@ class AiAgentRestApi(BaseSupersetApi):
                 "message": body["message"],
                 "database_id": body.get("database_id"),
                 "schema_name": body.get("schema_name"),
-                "agent_type": body.get("agent_type", "nl2sql"),
+                "agent_type": agent_type,
                 "session_id": body.get("session_id"),
             }
         )

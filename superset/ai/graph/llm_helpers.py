@@ -20,12 +20,25 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from typing import Any
 
 from superset.ai.llm.types import LLMMessage
 from superset.utils import json
 
 logger = logging.getLogger(__name__)
+
+try:
+    from langsmith.run_helpers import traceable
+except ImportError:  # pragma: no cover - LangSmith is an optional AI dependency.
+
+    def traceable(*args: Any, **kwargs: Any) -> Callable[..., Any]:
+        """Return a no-op decorator when LangSmith is unavailable."""
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            return func
+
+        return decorator
 
 # Regex to extract JSON from LLM output (handles ```json blocks)
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
@@ -73,6 +86,11 @@ def _extract_json_array(text: str) -> str:
     return text.strip()
 
 
+@traceable(
+    name="stategraph_llm_call_json",
+    run_type="llm",
+    tags=["superset-ai", "stategraph"],
+)
 def llm_call_json(prompt: str) -> dict[str, Any]:
     """Call LLM and parse response as a JSON object.
 
@@ -96,6 +114,11 @@ def llm_call_json(prompt: str) -> dict[str, Any]:
     return result
 
 
+@traceable(
+    name="stategraph_llm_call_json_list",
+    run_type="llm",
+    tags=["superset-ai", "stategraph"],
+)
 def llm_call_json_list(prompt: str) -> list[dict[str, Any]]:
     """Call LLM and parse response as a JSON array of objects.
 

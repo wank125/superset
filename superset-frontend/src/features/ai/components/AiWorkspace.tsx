@@ -87,7 +87,7 @@ export function AiWorkspace() {
   }, []);
 
   const databaseId = activeSession?.databaseId ?? null;
-  const agentType = activeSession?.agentType ?? 'nl2sql';
+  const agentType = activeSession?.agentType ?? 'auto';
 
   return (
     <WorkspaceRoot>
@@ -134,7 +134,7 @@ export function AiWorkspace() {
             chartResults={[]}
             dashboardResult={null}
             sqlPreview={null}
-            agentType="nl2sql"
+            agentType="auto"
           />
         )}
       </MainColumn>

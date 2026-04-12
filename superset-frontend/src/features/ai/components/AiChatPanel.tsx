@@ -224,6 +224,9 @@ export function AiChatPanel({
         {messages.map((msg, idx) => (
           <div key={idx}>
             <AiMessageBubble message={msg} />
+            {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
+              <AiStepProgress steps={msg.steps} />
+            )}
             {msg.role === 'assistant' && idx === messages.length - 1 && (
               <>
                 {agentType === 'nl2sql' && (
@@ -304,7 +307,7 @@ export function AiChatPanel({
             )}
           </div>
         ))}
-        {steps.length > 0 && <AiStepProgress steps={steps} />}
+        {loading && steps.length > 0 && <AiStepProgress steps={steps} />}
         {loading && streamingText && <AiStreamingText text={streamingText} />}
         {loading && !streamingText && steps.length === 0 && (
           <AiStreamingText text={t('Thinking...')} />

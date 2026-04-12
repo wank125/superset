@@ -45,6 +45,7 @@ _NODE_PROGRESS: dict[str, tuple[str, str | None]] = {
     "create_chart": ("创建图表...", None),
     "create_dashboard": ("创建仪表板...", None),
     "after_subgraph": (None, None),  # routing only, no visible output
+    "clarify_user": ("等待用户选择...", None),
 }
 
 
@@ -61,11 +62,13 @@ def run_graph(  # noqa: C901
 ) -> Iterator[AgentEvent]:
     """Build and execute the StateGraph, yielding real-time AgentEvents."""
     from superset.ai.graph.builder import build_chart_graph, build_dashboard_graph
+    from superset.ai.graph.checkpointer import get_checkpointer
 
+    checkpointer = get_checkpointer()
     graph = (
-        build_dashboard_graph()
+        build_dashboard_graph(checkpointer=checkpointer)
         if agent_mode == "dashboard"
-        else build_chart_graph()
+        else build_chart_graph(checkpointer=checkpointer)
     )
     request_id = str(uuid.uuid4())
 

@@ -14,33 +14,4 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Agent event types for streaming."""
-
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from typing import Any, Literal
-
-EventType = Literal[
-    "thinking",
-    "retrying",
-    "text_chunk",
-    "tool_call",
-    "tool_result",
-    "sql_generated",
-    "data_analyzed",
-    "chart_created",
-    "dashboard_created",
-    "error_fixed",
-    "intent_routed",
-    "done",
-    "error",
-]
-
-
-@dataclass
-class AgentEvent:
-    """A single event emitted by an agent during execution."""
-
-    type: EventType
-    data: dict[str, Any] = field(default_factory=dict)
+"""Intent router — classifies user messages and routes to the correct agent."""

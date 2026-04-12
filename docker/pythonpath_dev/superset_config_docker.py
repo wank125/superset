@@ -36,6 +36,8 @@ FEATURE_FLAGS = {
     "AI_AGENT_DEBUG": True,
     "AI_AGENT_DASHBOARD": True,
     "AI_AGENT_COPILOT": True,
+    "AI_AGENT_AUTO_ROUTE": True,
+    "AI_AGENT_CHECKPOINTER": False,  # Requires Redis Stack (redis/redis-stack-server)
 }
 
 # ---------------------------------------------------------------------------
@@ -60,9 +62,15 @@ AI_AGENT_STREAM_CHANNEL_PREFIX = "ai-agent-"
 # ---------------------------------------------------------------------------
 # LangSmith Tracing — observability for LangChain/LangGraph agents
 # ---------------------------------------------------------------------------
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ.setdefault("LANGCHAIN_API_KEY", "")
-os.environ["LANGCHAIN_PROJECT"] = "superset-ai-agent"
+os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+os.environ.setdefault("LANGCHAIN_PROJECT", "superset-ai-agent")
+os.environ.setdefault("LANGSMITH_TRACING", "true")
+os.environ.setdefault("LANGSMITH_PROJECT", os.environ["LANGCHAIN_PROJECT"])
+if os.environ.get("LANGCHAIN_API_KEY"):
+    os.environ.setdefault("LANGSMITH_API_KEY", os.environ["LANGCHAIN_API_KEY"])
+# Celery workers can exit child processes before background trace uploads flush.
+os.environ.setdefault("LANGCHAIN_CALLBACKS_BACKGROUND", "false")
+# LANGCHAIN_API_KEY should be set via docker/.env-local or environment
 
 # ---------------------------------------------------------------------------
 # LangChain Integration (Phase 7)

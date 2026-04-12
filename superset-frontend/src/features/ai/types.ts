@@ -19,6 +19,7 @@
 
 export type AgentEventType =
   | 'thinking'
+  | 'retrying'
   | 'text_chunk'
   | 'tool_call'
   | 'tool_result'
@@ -27,6 +28,7 @@ export type AgentEventType =
   | 'chart_created'
   | 'dashboard_created'
   | 'error_fixed'
+  | 'intent_routed'
   | 'done'
   | 'error';
 
@@ -40,6 +42,7 @@ export interface AiChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  steps?: AiStep[];
 }
 
 /** A single step in the agent's execution progress. */
