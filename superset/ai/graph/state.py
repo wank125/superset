@@ -33,6 +33,8 @@ class SchemaSummary(TypedDict):
     saved_metrics: list[str]  # saved metric names
     saved_metric_expressions: dict[str, str]  # saved metric name -> SQL expression
     main_dttm_col: str | None
+    column_descriptions: dict[str, str]  # Phase 12: col_name → description
+    column_verbose_names: dict[str, str]  # Phase 12: col_name → verbose_name
 
 
 class ResultSummary(TypedDict):
@@ -45,6 +47,7 @@ class ResultSummary(TypedDict):
     string_cols: list[str]
     low_cardinality_cols: list[str]  # distinct < 20
     suitability_flags: dict[str, bool]
+    insight: str | None  # Phase 11: LLM-generated one-line data insight
 
 
 class ChartIntent(TypedDict):

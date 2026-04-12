@@ -29,10 +29,12 @@ EventType = Literal[
     "tool_result",
     "sql_generated",
     "data_analyzed",
+    "insight_generated",  # Phase 11: data insight text
     "chart_created",
     "dashboard_created",
     "error_fixed",
     "intent_routed",
+    "clarify",        # Phase 17: ask user for missing info (dataset, etc.)
     "done",
     "error",
 ]

@@ -228,14 +228,24 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
 
                 # Collect the done event to extract conversation summary
                 assistant_summary = ""
+                sql_executed = ""
                 for event in events:
                     stream.publish_event(channel_id, event)
+                    if event.type == "sql_generated" and event.data.get("sql"):
+                        sql_executed = event.data["sql"]
                     if event.type == "done" and event.data.get("summary"):
                         assistant_summary = event.data["summary"]
 
                 # Write assistant response back to conversation history
                 if assistant_summary:
                     ctx.add_message("assistant", assistant_summary)
+
+                # Phase 11: persist SQL as tool summary for next-turn context
+                if sql_executed:
+                    ctx.add_tool_summary(
+                        "execute_sql",
+                        f"SQL: {sql_executed[:500]}",
+                    )
             else:
                 runner = create_agent_runner(
                     agent_type=agent_type,

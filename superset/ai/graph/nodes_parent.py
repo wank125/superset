@@ -316,10 +316,14 @@ def select_dataset(  # noqa: C901
         )
 
     # Multiple candidates → score-based selection (auto-pick best)
-    scored: list[tuple[int, Any]] = []
+    scored: list[tuple[float, Any]] = []
     for c in candidates:
         name = c.get("table_name", c) if isinstance(c, dict) else c
         name_lower = str(name).lower()
+        desc = (c.get("description", "") or "").lower() if isinstance(c, dict) else ""
+        match_score = float(c.get("match_score", 0)) if isinstance(c, dict) else 0.0
+
+        # Base score from string matching
         if name_lower == target:
             score = 100
         elif name_lower.startswith(target):
@@ -328,6 +332,15 @@ def select_dataset(  # noqa: C901
             score = 20
         else:
             score = 0
+
+        # Phase 12: add fuzzy match_score weight (0-60 range)
+        if score == 0 and match_score > 0:
+            score = match_score * 60
+
+        # Phase 12: bonus for description keyword match
+        if target in desc and score < 100:
+            score += 10
+
         scored.append((score, c))
 
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -469,6 +482,18 @@ def read_schema(
     }
     main_dttm = raw.get("main_datetime_column")
 
+    # Phase 12: extract column descriptions and verbose names
+    column_descriptions = {
+        c["name"]: c["description"]
+        for c in columns
+        if c.get("description")
+    }
+    column_verbose_names = {
+        c["name"]: c["verbose_name"]
+        for c in columns
+        if c.get("verbose_name")
+    }
+
     summary: SchemaSummary = {
         "datasource_id": raw["datasource_id"],
         "table_name": raw["table_name"],
@@ -478,6 +503,8 @@ def read_schema(
         "saved_metrics": saved_metrics[:10],
         "saved_metric_expressions": saved_metric_expressions,
         "main_dttm_col": main_dttm,
+        "column_descriptions": column_descriptions,
+        "column_verbose_names": column_verbose_names,
     }
     return Command(
         update={"schema_raw": raw, "schema_summary": summary},

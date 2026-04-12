@@ -95,6 +95,10 @@ def run_graph(  # noqa: C901
         created_charts: list[dict[str, Any]] = []
         created_dashboard: dict[str, Any] | None = None
         last_error: dict[str, Any] | None = None
+        last_sql: str | None = None
+        last_table_name: str | None = None
+        last_analysis_intent: str | None = None
+        last_row_count: int | None = None
 
         # stream_mode="updates" yields after each node completes
         t_node_start = time.monotonic()
@@ -121,13 +125,35 @@ def run_graph(  # noqa: C901
                     _le = node_output.get("last_error")
                     if isinstance(_le, dict):
                         last_error = _le
+                    # Phase 11: collect SQL, table, intent for rich summary
+                    _sql = node_output.get("sql")
+                    if _sql:
+                        last_sql = _sql
+                    _schema = node_output.get("schema_summary")
+                    if isinstance(_schema, dict) and _schema.get("table_name"):
+                        last_table_name = _schema["table_name"]
+                    _goal = node_output.get("goal")
+                    if isinstance(_goal, dict) and _goal.get("analysis_intent"):
+                        last_analysis_intent = _goal["analysis_intent"]
+                    _summary = node_output.get("query_result_summary")
+                    if isinstance(_summary, dict) and "row_count" in _summary:
+                        last_row_count = _summary["row_count"]
                     yield from _emit_node_events(node_name, node_output)
     except Exception as exc:
         logger.exception("Graph execution failed")
         yield AgentEvent(type="error", data={"message": str(exc)})
 
     # Build a conversation summary for multi-turn context
-    summary = _build_summary(message, created_charts, created_dashboard, last_error)
+    summary = _build_summary(
+        message,
+        created_charts,
+        created_dashboard,
+        last_error,
+        table_name=last_table_name,
+        sql=last_sql,
+        analysis_intent=last_analysis_intent,
+        row_count=last_row_count,
+    )
     yield AgentEvent(type="done", data={"summary": summary})
 
 
@@ -183,6 +209,13 @@ def _emit_node_events(  # noqa: C901
                     "suitability": summary.get("suitability_flags"),
                 },
             )
+            # Phase 11: emit insight event for frontend display
+            insight = summary.get("insight")
+            if insight:
+                yield AgentEvent(
+                    type="insight_generated",
+                    data={"insight": insight},
+                )
 
     # Error/repair events
     if node_name == "repair_chart_params":
@@ -222,11 +255,26 @@ def _build_summary(
     created_charts: list[dict[str, Any]],
     created_dashboard: dict[str, Any] | None,
     last_error: dict[str, Any] | None,
+    *,
+    table_name: str | None = None,
+    sql: str | None = None,
+    analysis_intent: str | None = None,
+    row_count: int | None = None,
 ) -> str:
     """Build a text summary of graph execution for conversation history."""
     parts: list[str] = []
     if last_error and not created_charts:
         return f"任务失败: {last_error.get('message', 'unknown error')}"
+    if table_name:
+        parts.append(f"数据集: {table_name}")
+    if analysis_intent:
+        parts.append(f"分析意图: {analysis_intent}")
+    if sql:
+        # Truncate SQL to avoid bloating the conversation history
+        sql_preview = sql[:500] + ("..." if len(sql) > 500 else "")
+        parts.append(f"SQL: {sql_preview}")
+    if row_count is not None:
+        parts.append(f"查询结果行数: {row_count}")
     if created_charts:
         for c in created_charts:
             name = c.get("slice_name", "未命名")

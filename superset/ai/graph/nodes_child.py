@@ -89,6 +89,8 @@ Columns:
   dimensions: {dimension_cols}
   metrics: {metric_cols}
   saved_metrics: {saved_metrics}
+Column business descriptions (use these to map user intent to column names):
+{column_descriptions_block}
 {error_hint}
 
 Output:
@@ -170,6 +172,16 @@ def plan_query(
         )
 
     sql_hint = intent.get("sql_hint", "")
+
+    # Phase 12: build column descriptions block for the prompt
+    col_desc = summary.get("column_descriptions", {})
+    col_verbose = summary.get("column_verbose_names", {})
+    # Merge: prefer description, supplement with verbose_name
+    all_desc = {**col_verbose, **col_desc}
+    col_desc_lines = "\n".join(
+        f"  {col}: {desc}" for col, desc in list(all_desc.items())[:15]
+    ) or "  (no business descriptions available)"
+
     prompt = PLAN_QUERY_PROMPT.format(
         analysis_intent=intent["analysis_intent"],
         slice_name=intent["slice_name"],
@@ -179,6 +191,7 @@ def plan_query(
         dimension_cols=summary["dimension_cols"],
         metric_cols=summary["metric_cols"],
         saved_metrics=summary["saved_metrics"],
+        column_descriptions_block=col_desc_lines,
         error_hint=error_hint,
     )
     try:
@@ -523,7 +536,31 @@ def analyze_result(
         "string_cols": string_cols,
         "low_cardinality_cols": low_card_cols,
         "suitability_flags": flags,
+        "insight": None,
     }
+
+    # Phase 11: generate one-line insight via LLM (best-effort, non-blocking)
+    if row_count > 0 and numeric_cols:
+        try:
+            from superset.ai.graph.llm_helpers import _get_llm_response
+
+            sample_rows = rows[:3] if rows else []
+            insight_prompt = (
+                f"Based on these data characteristics, write ONE sentence "
+                f"(max 30 chars in Chinese) describing the key finding:\n"
+                f"  row_count: {row_count}\n"
+                f"  numeric_cols: {numeric_cols[:3]}\n"
+                f"  datetime_col: {datetime_col}\n"
+                f"  low_card_cols: {low_card_cols[:3]}\n"
+                f"  sample (first 3 rows): {sample_rows}\n\n"
+                f"Output ONLY the insight sentence, nothing else."
+            )
+            insight = _get_llm_response(insight_prompt).strip()
+            if insight:
+                summary["insight"] = insight[:200]
+        except Exception as exc:
+            logger.warning("analyze_result insight generation failed: %s", exc)
+
     return Command(update={"query_result_summary": summary}, goto="select_chart")
 
 
