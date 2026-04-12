@@ -82,3 +82,13 @@ export interface AiEventsResponse {
   events: AiStreamEvent[];
   last_id: string;
 }
+
+/** A persistent conversation session stored in localStorage. */
+export interface AiSession {
+  id: string;
+  title: string;
+  databaseId: number | null;
+  agentType: string;
+  createdAt: number;
+  updatedAt: number;
+}

@@ -119,11 +119,8 @@ export function AiStepProgress({ steps }: AiStepProgressProps) {
 
   const doneCount = steps.filter(s => s.status === 'done').length;
   const totalCount = steps.length;
-  const shouldCollapse =
-    !expanded && steps.length > COLLAPSE_THRESHOLD;
-  const visibleSteps = shouldCollapse
-    ? steps.slice(-VISIBLE_TAIL)
-    : steps;
+  const shouldCollapse = !expanded && steps.length > COLLAPSE_THRESHOLD;
+  const visibleSteps = shouldCollapse ? steps.slice(-VISIBLE_TAIL) : steps;
 
   return (
     <Container>
@@ -148,9 +145,7 @@ export function AiStepProgress({ steps }: AiStepProgressProps) {
               <Icon $status={step.status}>{getIcon(step.status)}</Icon>
               <span>{step.label}</span>
             </StepRow>
-            {step.detail && (
-              <Detail>{step.detail}</Detail>
-            )}
+            {step.detail && <Detail>{step.detail}</Detail>}
           </div>
         ))}
       </StepList>

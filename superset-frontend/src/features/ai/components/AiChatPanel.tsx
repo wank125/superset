@@ -304,7 +304,7 @@ export function AiChatPanel({
             )}
           </div>
         ))}
-        {loading && steps.length > 0 && <AiStepProgress steps={steps} />}
+        {steps.length > 0 && <AiStepProgress steps={steps} />}
         {loading && streamingText && <AiStreamingText text={streamingText} />}
         {loading && !streamingText && steps.length === 0 && (
           <AiStreamingText text={t('Thinking...')} />

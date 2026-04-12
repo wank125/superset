@@ -18,24 +18,36 @@
  */
 
 import { styled } from '@superset-ui/core';
+import { AiMarkdown } from './AiMarkdown';
 
 interface AiStreamingTextProps {
   text: string;
 }
 
 const StreamingContainer = styled.div`
-  padding: 8px 12px;
+  padding: 0;
   border-radius: 8px;
-  max-width: 85%;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   margin-bottom: 8px;
-  align-self: flex-start;
   background: ${({ theme }) => theme.colorBgLayout};
   color: ${({ theme }) => theme.colorText};
   word-break: break-word;
-  white-space: pre-wrap;
   font-size: 13px;
   line-height: 1.5;
   min-height: 20px;
+
+  > div > p,
+  > div > ul,
+  > div > ol,
+  > div > h1,
+  > div > h2,
+  > div > h3,
+  > div > h4 {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
 
   &::after {
     content: '▌';
@@ -43,12 +55,22 @@ const StreamingContainer = styled.div`
   }
 
   @keyframes blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0; }
+    0%,
+    50% {
+      opacity: 1;
+    }
+    51%,
+    100% {
+      opacity: 0;
+    }
   }
 `;
 
 export function AiStreamingText({ text }: AiStreamingTextProps) {
   if (!text) return null;
-  return <StreamingContainer>{text}</StreamingContainer>;
+  return (
+    <StreamingContainer>
+      <AiMarkdown content={text} />
+    </StreamingContainer>
+  );
 }

@@ -119,6 +119,11 @@ const SqlLab = lazy(
   () => import(/* webpackChunkName: "SqlLab" */ 'src/pages/SqlLab'),
 );
 
+const AiAssistant = lazy(
+  () =>
+    import(/* webpackChunkName: "AiAssistant" */ 'src/pages/AiAssistant'),
+);
+
 const AllEntities = lazy(
   () => import(/* webpackChunkName: "AllEntities" */ 'src/pages/AllEntities'),
 );
@@ -288,6 +293,10 @@ export const routes: Routes = [
   {
     path: '/sqllab/',
     Component: SqlLab,
+  },
+  {
+    path: '/aiassistant/',
+    Component: AiAssistant,
   },
   { path: '/user_info/', Component: UserInfo },
   {

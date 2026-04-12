@@ -204,6 +204,7 @@ export function Menu({
     Datasets = '/tablemodelview',
     SqlLab = '/sqllab',
     SavedQueries = '/savedqueryview',
+    AiAssistant = '/aiassistant',
   }
 
   const defaultTabSelection: string[] = [];
@@ -223,6 +224,9 @@ export function Menu({
         break;
       case path.startsWith(Paths.SqlLab) || path.startsWith(Paths.SavedQueries):
         setActiveTabs(['SQL']);
+        break;
+      case path.startsWith(Paths.AiAssistant):
+        setActiveTabs(['AI Assistant']);
         break;
       default:
         setActiveTabs(defaultTabSelection);

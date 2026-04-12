@@ -216,6 +216,7 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             TableModelView,
         )
         from superset.views.sqllab import SqllabView
+        from superset.views.ai import AiAssistantView
         from superset.views.tags import TagModelView, TagView
         from superset.views.themes import ThemeModelView
         from superset.views.user_info import UserInfoView
@@ -447,6 +448,16 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
             category="SQL Lab",
             category_label=_("SQL Lab"),
         )
+        if feature_flag_manager.is_feature_enabled("AI_AGENT"):
+            appbuilder.add_view(
+                AiAssistantView,
+                "AI Assistant",
+                label=_("AI助手"),
+                icon="fa-robot",
+                category="",
+                category_icon="",
+                href=f"{app_root}/aiassistant/",
+            )
         appbuilder.add_view(
             TagModelView,
             "Tags",

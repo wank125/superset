@@ -19,28 +19,49 @@
 
 import { styled } from '@superset-ui/core';
 import type { AiChatMessage } from '../types';
+import { AiMarkdown } from './AiMarkdown';
 
 interface AiMessageBubbleProps {
   message: AiChatMessage;
 }
 
 const Bubble = styled.div<{ isUser: boolean }>`
-  padding: 8px 12px;
+  padding: ${({ isUser }) => (isUser ? '8px 12px' : 0)};
   border-radius: 8px;
-  max-width: 85%;
+  width: ${({ isUser }) => (isUser ? 'fit-content' : '100%')};
+  max-width: ${({ isUser }) => (isUser ? '85%' : '100%')};
   margin-bottom: 8px;
-  align-self: ${({ isUser }) => (isUser ? 'flex-end' : 'flex-start')};
+  margin-left: ${({ isUser }) => (isUser ? 'auto' : 0)};
+  box-sizing: border-box;
   background: ${({ isUser, theme }) =>
     isUser ? theme.colorPrimary : theme.colorBgLayout};
   color: ${({ isUser, theme }) =>
     isUser ? theme.colorWhite : theme.colorText};
   word-break: break-word;
-  white-space: pre-wrap;
   font-size: 13px;
   line-height: 1.5;
+
+  ${({ isUser }) =>
+    !isUser &&
+    `
+      > div > p,
+      > div > ul,
+      > div > ol,
+      > div > h1,
+      > div > h2,
+      > div > h3,
+      > div > h4 {
+        padding-left: 12px;
+        padding-right: 12px;
+      }
+    `}
 `;
 
 export function AiMessageBubble({ message }: AiMessageBubbleProps) {
   const isUser = message.role === 'user';
-  return <Bubble isUser={isUser}>{message.content}</Bubble>;
+  return (
+    <Bubble isUser={isUser}>
+      <AiMarkdown content={message.content} />
+    </Bubble>
+  );
 }

@@ -36,8 +36,20 @@ function createSessionId(): string {
 
 let stepCounter = 0;
 
-export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
-  const [messages, setMessages] = useState<AiChatMessage[]>([]);
+export function useAiChat(
+  databaseId: number,
+  agentType: string = 'nl2sql',
+  sessionId?: string,
+  initialMessages: AiChatMessage[] = [],
+) {
+  // Use the provided sessionId (from AiWorkspace session) or generate one
+  const sessionIdRef = useRef<string>(sessionId ?? createSessionId());
+  // If sessionId prop changes, update the ref
+  if (sessionId && sessionIdRef.current !== sessionId) {
+    sessionIdRef.current = sessionId;
+  }
+
+  const [messages, setMessages] = useState<AiChatMessage[]>(initialMessages);
   const [loading, setLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [steps, setSteps] = useState<AiStep[]>([]);
@@ -46,7 +58,6 @@ export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
     useState<DashboardResult | null>(null);
   const [sqlPreview, setSqlPreview] = useState<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sessionIdRef = useRef<string>(createSessionId());
   // Ref to track accumulated streaming text without relying on setState updater
   const streamingTextRef = useRef('');
   // Track step labels to avoid duplicates
