@@ -52,7 +52,7 @@ class ExecuteSqlTool(BaseTool):
     def __init__(self, database_id: int) -> None:
         self._database_id = database_id
 
-    def run(self, arguments: dict[str, Any]) -> str:
+    def run(self, arguments: dict[str, Any]) -> str:  # noqa: C901
         sql = arguments.get("sql", "").strip()
         if not sql:
             return "Error: No SQL provided."
@@ -70,7 +70,10 @@ class ExecuteSqlTool(BaseTool):
         try:
             security_manager.raise_for_access(database=database, sql=sql)
         except Exception as exc:
-            return f"Error: Access denied for database '{database.database_name}': {exc}"
+            return (
+                f"Error: Access denied for database "
+                f"'{database.database_name}': {exc}"
+            )
 
         # Security: reject mutating statements (use target DB dialect)
         try:
@@ -88,50 +91,57 @@ class ExecuteSqlTool(BaseTool):
                 "are prohibited."
             )
 
-        # Execute the query
         try:
-            with database.get_sqla_engine() as engine:
-                with engine.connect() as conn:
-                    result = conn.execution_options(max_rows=_MAX_ROWS).execute(
-                        __import__("sqlalchemy").text(sql)
-                    )
-                    columns = list(result.keys())
-                    rows = result.fetchmany(_MAX_ROWS)
-                    total_fetched = len(rows)
-
-            if not rows:
-                return "Query executed successfully. No rows returned."
-
-            # Format as text table
-            lines = []
-            lines.append(" | ".join(columns))
-            lines.append("-" * len(lines[0]))
-
-            preview_rows = rows[:_PREVIEW_ROWS]
-            for row in preview_rows:
-                lines.append(" | ".join(str(v) for v in row))
-
-            summary = f"\n\nShowing {len(preview_rows)} of {total_fetched} rows."
-            if total_fetched > _PREVIEW_ROWS:
-                summary += f" ({total_fetched - _PREVIEW_ROWS} more rows not shown)"
-
-            return "\n".join(lines) + summary
-
-        except Exception as exc:
-            logger.exception("SQL execution failed")
-            error_msg = str(exc)
-            # Enrich the error with structured information from the DB engine spec
+            # Execute the query
             try:
-                errors = database.db_engine_spec.extract_errors(exc)
-                if errors:
-                    err = errors[0]
-                    error_type = str(err.error_type)
-                    parts = [f"SQL Error [{error_type}]: {err.message}"]
-                    if err.extra and "issue_codes" in err.extra:
-                        codes = err.extra["issue_codes"]
-                        if codes and isinstance(codes, list) and codes[0].get("message"):
-                            parts.append(f"Suggestion: {codes[0]['message']}")
-                    return "\n".join(parts)
-            except Exception:
-                pass
-            return f"Error executing SQL: {error_msg}"
+                with database.get_sqla_engine() as engine:
+                    with engine.connect() as conn:
+                        result = conn.execution_options(max_rows=_MAX_ROWS).execute(
+                            __import__("sqlalchemy").text(sql)
+                        )
+                        columns = list(result.keys())
+                        rows = result.fetchmany(_MAX_ROWS)
+                        total_fetched = len(rows)
+
+                if not rows:
+                    return "Query executed successfully. No rows returned."
+
+                # Format as text table
+                lines = []
+                lines.append(" | ".join(columns))
+                lines.append("-" * len(lines[0]))
+
+                preview_rows = rows[:_PREVIEW_ROWS]
+                for row in preview_rows:
+                    lines.append(" | ".join(str(v) for v in row))
+
+                summary = f"\n\nShowing {len(preview_rows)} of {total_fetched} rows."
+                if total_fetched > _PREVIEW_ROWS:
+                    summary += f" ({total_fetched - _PREVIEW_ROWS} more rows not shown)"
+
+                return "\n".join(lines) + summary
+
+            except Exception as exc:
+                logger.exception("SQL execution failed")
+                error_msg = str(exc)
+                # Enrich the error with structured information from the DB engine spec
+                try:
+                    errors = database.db_engine_spec.extract_errors(exc)
+                    if errors:
+                        err = errors[0]
+                        error_type = str(err.error_type)
+                        parts = [f"SQL Error [{error_type}]: {err.message}"]
+                        if err.extra and "issue_codes" in err.extra:
+                            codes = err.extra["issue_codes"]
+                            if (
+                                codes
+                                and isinstance(codes, list)
+                                and codes[0].get("message")
+                            ):
+                                parts.append(f"Suggestion: {codes[0]['message']}")
+                        return "\n".join(parts)
+                except Exception:
+                    logger.debug("Failed to extract SQL errors", exc_info=True)
+                return f"Error executing SQL: {error_msg}"
+        finally:
+            db.session.rollback()

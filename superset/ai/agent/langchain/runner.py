@@ -183,9 +183,19 @@ class LangChainAgentRunner(AgentRunner):
             # stream_mode=["messages", "updates"]:
             #   "messages" → (AIMessageChunk, metadata) for text tokens
             #   "updates"  → complete tool call/result snapshots
-            include_history = self._agent_type != "nl2sql"
+            # NL2SQL needs a small amount of history for references like
+            # "this table", but should not see the full conversation because
+            # local models may reuse historical answers instead of calling
+            # tools. Keep only recent context and rely on the prompt to force
+            # fresh schema/query validation every turn.
+            history_limit = 5 if self._agent_type == "nl2sql" else None
             for mode, chunk in agent.stream(
-                {"messages": memory.get_messages(include_history=include_history)},
+                {
+                    "messages": memory.get_messages(
+                        include_history=True,
+                        max_messages=history_limit,
+                    )
+                },
                 config=config,
                 stream_mode=["messages", "updates"],
             ):
@@ -250,76 +260,29 @@ class LangChainAgentRunner(AgentRunner):
                     data={"content": msg.content},
                 )
 
-            # Tool call chunks — only emit when we have a name (first chunk)
-            if msg.tool_call_chunks:
-                for tc_chunk in msg.tool_call_chunks:
-                    if tc_chunk.get("name"):
-                        tool_name = tc_chunk["name"]
-                        args = tc_chunk.get("args", {})
-
-                        # Only guard side-effecting tools here. Read tools like
-                        # execute_sql may be called repeatedly in one session.
-                        if self._tool_guard.check(tool_name, args):
-                            logger.warning(
-                                "Tool '%s' called %d times consecutively, "
-                                "injecting correction",
-                                tool_name,
-                                self._tool_guard._max,
-                            )
-                            yield AgentEvent(
-                                type="error",
-                                data={
-                                    "message": (
-                                        f"Tool '{tool_name}' repeated too "
-                                        f"many times, skipping."
-                                    ),
-                                },
-                            )
-                            return
-
-                        # Sequential order enforcement for dashboard agent
-                        if (
-                            self._order_guard is not None
-                            and not self._order_guard.check(tool_name)
-                        ):
-                            allowed = sorted(
-                                self._order_guard.allowed_tools
-                            )
-                            logger.warning(
-                                "Tool '%s' blocked by order guard "
-                                "(phase=%d), allowed: %s",
-                                tool_name,
-                                self._order_guard.phase_idx,
-                                allowed,
-                            )
-                            yield AgentEvent(
-                                type="error",
-                                data={
-                                    "message": (
-                                        f"Tool '{tool_name}' called out of "
-                                        f"order. Allowed: {', '.join(allowed)}"
-                                    ),
-                                },
-                            )
-                            return
-
-                        yield AgentEvent(
-                            type="tool_call",
-                            data={"tool": tool_name, "args": args},
-                        )
-
         elif isinstance(msg, ToolMessage):
             # Tool execution result — advance order guard on success
             tool_name = getattr(msg, "name", "")
             if self._order_guard is not None and tool_name:
                 self._order_guard.advance(tool_name)
+            result = msg.content
             yield AgentEvent(
                 type="tool_result",
                 data={
                     "tool": tool_name,
-                    "result": msg.content,
+                    "result": result,
                 },
             )
+            if _is_connection_pool_error(result):
+                yield AgentEvent(
+                    type="error",
+                    data={
+                        "message": (
+                            "Database connection pool is exhausted. "
+                            "Please retry after the worker releases connections."
+                        ),
+                    },
+                )
 
     def _handle_updates(self, chunk: Any) -> Iterator[AgentEvent]:
         """Handle 'updates' stream mode — complete node outputs."""
@@ -346,6 +309,31 @@ class LangChainAgentRunner(AgentRunner):
                     for tool_call in msg.tool_calls[:1]:
                         tool_name = tool_call.get("name")
                         args = tool_call.get("args") or {}
+                        if not tool_name:
+                            continue
+
+                        if self._tool_guard.check(tool_name, args):
+                            logger.warning(
+                                "Tool '%s' called %d times consecutively, "
+                                "injecting correction",
+                                tool_name,
+                                self._tool_guard._max,
+                            )
+                            yield AgentEvent(
+                                type="error",
+                                data={
+                                    "message": (
+                                        f"Tool '{tool_name}' repeated too "
+                                        f"many times, skipping."
+                                    ),
+                                },
+                            )
+                            return
+
+                        yield AgentEvent(
+                            type="tool_call",
+                            data={"tool": tool_name, "args": args},
+                        )
                         if (
                             tool_name == "execute_sql"
                             and isinstance(args, dict)
@@ -355,3 +343,9 @@ class LangChainAgentRunner(AgentRunner):
                                 type="sql_generated",
                                 data={"sql": args["sql"]},
                             )
+
+
+def _is_connection_pool_error(content: Any) -> bool:
+    """Return whether a tool result indicates DB connection pool exhaustion."""
+    text = str(content)
+    return "QueuePool limit" in text and "connection timed out" in text

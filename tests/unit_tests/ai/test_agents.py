@@ -189,6 +189,45 @@ class TestConversationContext:
         ctx.clear()
         mock_cache.cache.delete.assert_called_once()
 
+    @patch("superset.ai.agent.context.cache_manager")
+    @patch("superset.ai.agent.context.get_max_context_rounds", return_value=5)
+    def test_add_tool_summary(self, mock_rounds, mock_cache):
+        from superset.ai.agent.context import ConversationContext
+
+        store: dict[str, str] = {}
+        mock_cache.cache.get.side_effect = lambda k: store.get(k)
+        mock_cache.cache.set.side_effect = lambda k, v, timeout=None: store.update({k: v})
+
+        ctx = ConversationContext(user_id=1, session_id="s1")
+        ctx.add_message("user", "query births")
+        ctx.add_tool_summary("execute_sql", "SQL: SELECT 1\nResult: ok")
+
+        stored = json.loads(store[ctx._key])
+        assert len(stored) == 2
+        assert stored[1]["role"] == "tool_summary"
+        assert stored[1]["tool"] == "execute_sql"
+
+    @patch("superset.ai.agent.context.cache_manager")
+    @patch("superset.ai.agent.context.get_max_context_rounds", return_value=5)
+    def test_tool_summary_truncation(self, mock_rounds, mock_cache):
+        from superset.ai.agent.context import ConversationContext
+
+        store: dict[str, str] = {}
+        mock_cache.cache.get.side_effect = lambda k: store.get(k)
+        mock_cache.cache.set.side_effect = lambda k, v, timeout=None: store.update({k: v})
+
+        ctx = ConversationContext(user_id=1, session_id="s1")
+        # Add more than _MAX_TOOL_SUMMARIES (5)
+        for i in range(8):
+            ctx.add_tool_summary("execute_sql", f"SQL #{i}")
+
+        stored = json.loads(store[ctx._key])
+        summaries = [e for e in stored if e["role"] == "tool_summary"]
+        # Should keep only last 5
+        assert len(summaries) == 5
+        assert summaries[0]["content"] == "SQL #3"
+        assert summaries[-1]["content"] == "SQL #7"
+
 
 class TestToolCallRepetitionGuard:
     """Tests for LangChain tool repetition guard."""
@@ -336,7 +375,116 @@ class TestToolOrderGuard:
         assert native_tool.called is False
 
 
-class TestDashboardAgentOrderEnforcement:
+class TestToolSummaryInReActLoop:
+    """Test that tool summaries are collected and persisted during the ReAct loop."""
+
+    @patch("superset.ai.agent.base.get_max_turns", return_value=3)
+    @patch("superset.ai.agent.context.cache_manager")
+    def test_execute_sql_summary_persisted(self, mock_cache, mock_turns):
+        from superset.ai.agent.base import BaseAgent
+        from superset.ai.agent.context import ConversationContext
+        from superset.ai.tools.base import BaseTool
+
+        class FakeSqlTool(BaseTool):
+            name = "execute_sql"
+            description = "Execute SQL"
+            parameters_schema = {
+                "type": "object",
+                "properties": {"sql": {"type": "string"}},
+            }
+
+            def run(self, arguments):
+                return "gender|count\nM|100\nF|90"
+
+        store: dict[str, str] = {}
+        mock_cache.cache.get.side_effect = lambda k: store.get(k)
+        mock_cache.cache.set.side_effect = lambda k, v, timeout=None: store.update({k: v})
+
+        mock_provider = MagicMock()
+        mock_provider.chat_stream.side_effect = [
+            iter([
+                LLMStreamChunk(
+                    tool_calls=[
+                        ToolCall(
+                            id="tc_1",
+                            name="execute_sql",
+                            arguments={"sql": "SELECT gender, COUNT(*) FROM t"},
+                        )
+                    ]
+                ),
+                LLMStreamChunk(finish_reason="tool_calls"),
+            ]),
+            iter([
+                LLMStreamChunk(content="Here are the results"),
+                LLMStreamChunk(finish_reason="stop"),
+            ]),
+        ]
+
+        context = ConversationContext(user_id=1, session_id="test")
+
+        class TestAgent(BaseAgent):
+            def get_system_prompt(self):
+                return "test"
+
+        agent = TestAgent(mock_provider, context, tools=[FakeSqlTool()])
+        events = list(agent.run("show data"))
+
+        # Should complete normally
+        assert any(e.type == "done" for e in events)
+
+        # History should contain user, assistant, and tool_summary
+        history = json.loads(store[context._key])
+        roles = [h["role"] for h in history]
+        assert "user" in roles
+        assert "assistant" in roles
+        assert "tool_summary" in roles
+        tool_entry = [h for h in history if h["role"] == "tool_summary"][0]
+        assert tool_entry["tool"] == "execute_sql"
+        assert "SELECT gender" in tool_entry["content"]
+
+    @patch("superset.ai.agent.base.get_max_turns", return_value=3)
+    @patch("superset.ai.agent.context.cache_manager")
+    def test_tool_summary_injected_as_system_message(self, mock_cache, mock_turns):
+        from superset.ai.agent.base import BaseAgent
+        from superset.ai.agent.context import ConversationContext
+
+        # Pre-populate history with a tool_summary from a previous turn
+        history_data = [
+            {"role": "user", "content": "show births"},
+            {"role": "assistant", "content": "Here is the result"},
+            {"role": "tool_summary", "tool": "execute_sql", "content": "SQL: SELECT 1"},
+        ]
+        store = {
+            "ai:ctx:1:session1": json.dumps(history_data),
+        }
+        mock_cache.cache.get.side_effect = lambda k: store.get(k)
+        mock_cache.cache.set.side_effect = lambda k, v, timeout=None: store.update({k: v})
+
+        mock_provider = MagicMock()
+        mock_provider.chat_stream.return_value = iter([
+            LLMStreamChunk(content="Follow-up answer"),
+            LLMStreamChunk(finish_reason="stop"),
+        ])
+
+        context = ConversationContext(user_id=1, session_id="session1")
+
+        class TestAgent(BaseAgent):
+            def get_system_prompt(self):
+                return "test"
+
+        agent = TestAgent(mock_provider, context, tools=[])
+        events = list(agent.run("now filter by male"))
+
+        # Verify messages sent to LLM include system-injected tool_summary
+        call_args = mock_provider.chat_stream.call_args
+        messages = call_args[0][0]
+        system_msgs = [m for m in messages if m.role == "system"]
+        # Should have: prompt + tool_summary injection
+        assert any("Previous tool result" in m.content for m in system_msgs)
+        assert any("execute_sql" in m.content for m in system_msgs)
+
+
+
     """Test legacy path: DashboardAgent blocks out-of-order tool calls via hooks."""
 
     @patch("superset.ai.agent.base.get_max_turns", return_value=5)

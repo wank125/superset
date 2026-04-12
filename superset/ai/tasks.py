@@ -29,6 +29,24 @@ from superset.utils.core import override_user
 logger = logging.getLogger(__name__)
 
 
+def _cleanup_db_session(*, dispose_engine: bool = False) -> None:
+    """Rollback and remove the current Celery process DB session."""
+    from superset import db
+
+    try:
+        db.session.rollback()
+    except Exception:
+        logger.debug("Failed to rollback AI task DB session", exc_info=True)
+    finally:
+        db.session.remove()
+
+    if dispose_engine:
+        try:
+            db.engine.dispose()
+        except Exception:
+            logger.debug("Failed to dispose AI task DB engine", exc_info=True)
+
+
 @celery_app.task(soft_time_limit=get_agent_timeout())
 def run_agent_task(kwargs: dict[str, Any]) -> str:
     """Run an AI agent in a Celery worker.
@@ -64,6 +82,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
     try:
         from superset.extensions import security_manager
 
+        _cleanup_db_session(dispose_engine=True)
         user = security_manager.get_user_by_id(user_id) if user_id else None
         with override_user(user):
             # Path selection (priority order):
@@ -134,8 +153,6 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
             AgentEvent(type="error", data={"message": str(exc)}),
         )
     finally:
-        from superset import db
-
-        db.session.remove()
+        _cleanup_db_session(dispose_engine=True)
 
     return channel_id

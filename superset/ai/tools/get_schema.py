@@ -74,6 +74,8 @@ class GetSchemaTool(BaseTool):
         self._default_schema = default_schema
 
     def run(self, arguments: dict[str, Any]) -> str:
+        from superset import db
+
         schema_name = arguments.get("schema_name") or self._default_schema
         table_name = arguments.get("table_name")
         include_columns = bool(arguments.get("include_columns", False))
@@ -97,6 +99,8 @@ class GetSchemaTool(BaseTool):
         except Exception as exc:
             logger.exception("Failed to fetch schema")
             return f"Error fetching schema: {exc}"
+        finally:
+            db.session.rollback()
 
     def _fetch_schema(  # noqa: C901
         self,

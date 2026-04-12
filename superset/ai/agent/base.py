@@ -123,17 +123,29 @@ class BaseAgent(ABC):
         messages = [
             LLMMessage(role="system", content=self.get_system_prompt())
         ]
-        # Append conversation history
+        # Append conversation history, converting tool_summary to system messages
         for entry in self._context.get_history():
-            messages.append(
-                LLMMessage(role=entry["role"], content=entry["content"])
-            )
+            if entry["role"] == "tool_summary":
+                messages.append(
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            f"[Previous tool result — {entry.get('tool', 'unknown')}]\n"
+                            f"{entry['content']}"
+                        ),
+                    )
+                )
+            else:
+                messages.append(
+                    LLMMessage(role=entry["role"], content=entry["content"])
+                )
         messages.append(LLMMessage(role="user", content=user_message))
 
         # Save user message to context
         self._context.add_message("user", user_message)
 
         assistant_content_parts: list[str] = []
+        tool_summaries: list[tuple[str, str]] = []  # (tool_name, content)
         tool_defs = self._get_tool_defs() if self._tools else None
 
         for _turn in range(self._max_turns):
@@ -239,6 +251,19 @@ class BaseAgent(ABC):
                 except Exception as exc:
                     result = f"Tool error: {exc}"
 
+                # Record key tool results for multi-turn context
+                if tc["name"] == "execute_sql":
+                    sql = (
+                        tc["arguments"].get("sql", "")
+                        if isinstance(tc["arguments"], dict)
+                        else str(tc["arguments"])
+                    )
+                    preview = str(result)[:300]
+                    tool_summaries.append((
+                        "execute_sql",
+                        f"SQL: {sql}\nResult preview: {preview}",
+                    ))
+
                 messages.append(
                     LLMMessage(
                         role="tool",
@@ -259,5 +284,9 @@ class BaseAgent(ABC):
         # Save assistant response to context
         full_response = "".join(assistant_content_parts)
         self._context.add_message("assistant", full_response)
+
+        # Persist tool summaries for next-turn context
+        for tool_name, content in tool_summaries:
+            self._context.add_tool_summary(tool_name, content)
 
         yield AgentEvent(type="done", data={})

@@ -36,6 +36,9 @@ show the user a sample of results.
 8. For questions asking how many tables/datasets exist, answer with the exact \
 count from `execute_sql` and the exact table names from `get_schema`. Do not \
 group tables into categories or invent domain summaries.
+9. Conversation history may help resolve references like "this table", but \
+you must still call tools on every user turn. Never answer only from previous \
+assistant messages or cached-looking context.
 
 ## Workflow
 1. Receive user request

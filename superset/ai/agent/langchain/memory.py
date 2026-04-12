@@ -46,11 +46,17 @@ class LangChainMemoryAdapter:
     def __init__(self, user_id: int, session_id: str) -> None:
         self._ctx = ConversationContext(user_id=user_id, session_id=session_id)
 
-    def get_messages(self, include_history: bool = True) -> list[BaseMessage]:
+    def get_messages(
+        self,
+        include_history: bool = True,
+        max_messages: int | None = None,
+    ) -> list[BaseMessage]:
         """Load history from Redis and convert to LangChain messages."""
         history = self._ctx.get_history()
         if not include_history:
             history = history[-1:]
+        elif max_messages is not None:
+            history = history[-max_messages:]
 
         messages: list[BaseMessage] = []
         for entry in history:
