@@ -23,6 +23,7 @@ export type AgentEventType =
   | 'tool_call'
   | 'tool_result'
   | 'sql_generated'
+  | 'data_analyzed'
   | 'chart_created'
   | 'dashboard_created'
   | 'error_fixed'
@@ -39,6 +40,31 @@ export interface AiChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
+}
+
+/** A single step in the agent's execution progress. */
+export interface AiStep {
+  id: string;
+  type: AgentEventType;
+  label: string;
+  status: 'running' | 'done' | 'error';
+  detail?: string;
+}
+
+/** Result of a successful chart creation event. */
+export interface ChartResult {
+  chartId: number;
+  sliceName: string;
+  vizType: string;
+  exploreUrl: string;
+}
+
+/** Result of a successful dashboard creation event. */
+export interface DashboardResult {
+  dashboardId: number;
+  dashboardTitle: string;
+  dashboardUrl: string;
+  chartCount: number;
 }
 
 export interface AiChatRequest {

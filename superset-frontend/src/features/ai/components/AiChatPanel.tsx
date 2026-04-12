@@ -19,11 +19,12 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { styled, t } from '@superset-ui/core';
-import { Radio } from '@superset-ui/core/components';
+import { Radio, RadioChangeEvent } from '@superset-ui/core/components/Radio';
 import { useAiChat } from '../hooks/useAiChat';
 import { AiMessageBubble } from './AiMessageBubble';
 import { AiStreamingText } from './AiStreamingText';
 import { AiSqlPreview } from './AiSqlPreview';
+import { AiStepProgress } from './AiStepProgress';
 
 interface AiChatPanelProps {
   databaseId: number;
@@ -42,6 +43,7 @@ const PanelContainer = styled.div`
 `;
 
 const Header = styled.div`
+  flex-shrink: 0;
   padding: 12px 16px;
   border-bottom: 1px solid ${({ theme }) => theme.colorBorderSecondary};
   display: flex;
@@ -50,6 +52,8 @@ const Header = styled.div`
 `;
 
 const HeaderLeft = styled.div`
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -60,6 +64,7 @@ const HeaderTitle = styled.span`
 `;
 
 const CloseButton = styled.button`
+  flex-shrink: 0;
   background: none;
   border: none;
   cursor: pointer;
@@ -69,6 +74,7 @@ const CloseButton = styled.button`
 
 const MessagesContainer = styled.div`
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px;
   display: flex;
@@ -84,6 +90,7 @@ const InputContainer = styled.div`
 
 const Input = styled.input`
   flex: 1;
+  min-width: 0;
   padding: 8px 12px;
   border: 1px solid ${({ theme }) => theme.colorBorderSecondary};
   border-radius: 4px;
@@ -107,10 +114,10 @@ const SendButton = styled.button<{ disabled: boolean }>`
   font-size: 13px;
 `;
 
-const ChartLink = styled.a`
-  display: inline-block;
-  margin-top: 4px;
-  padding: 6px 12px;
+const ResultCard = styled.a`
+  display: block;
+  margin-top: 6px;
+  padding: 8px 12px;
   background: ${({ theme }) => theme.colorPrimaryBg};
   color: ${({ theme }) => theme.colorPrimary};
   border: 1px solid ${({ theme }) => theme.colorPrimaryBorder};
@@ -124,30 +131,10 @@ const ChartLink = styled.a`
   }
 `;
 
-function extractChartUrl(text: string): {
-  chartId: number;
-  exploreUrl: string;
-} | null {
-  // Match explore URL with slice_id from the text
-  const match = text.match(
-    /\/explore\/\?(?:form_data_key=[^&]*&)?slice_id=(\d+)/,
-  );
-  if (match) {
-    return { chartId: parseInt(match[1], 10), exploreUrl: match[0] };
-  }
-  return null;
-}
-
-function extractDashboardUrl(text: string): {
-  dashboardId: number;
-  dashboardUrl: string;
-} | null {
-  const match = text.match(/\/superset\/dashboard\/(\d+)/);
-  if (match) {
-    return { dashboardId: parseInt(match[1], 10), dashboardUrl: match[0] };
-  }
-  return null;
-}
+const ResultLabel = styled.span`
+  font-weight: ${({ theme }) => theme.fontWeightStrong};
+  margin-right: 8px;
+`;
 
 const AGENT_MODES = [
   { label: 'SQL', value: 'nl2sql' },
@@ -165,8 +152,17 @@ export function AiChatPanel({
   const [agentType, setAgentType] = useState('nl2sql');
   const [inputValue, setInputValue] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { messages, loading, streamingText, sendMessage, clearMessages } =
-    useAiChat(databaseId, agentType);
+  const {
+    messages,
+    loading,
+    streamingText,
+    sendMessage,
+    clearMessages,
+    steps,
+    chartResults,
+    dashboardResult,
+    sqlPreview,
+  } = useAiChat(databaseId, agentType);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -174,9 +170,9 @@ export function AiChatPanel({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, streamingText, scrollToBottom]);
+  }, [messages, streamingText, steps, scrollToBottom]);
 
-  const handleModeChange = (e: any) => {
+  const handleModeChange = (e: RadioChangeEvent) => {
     const newMode = e.target.value;
     if (newMode !== agentType) {
       setAgentType(newMode);
@@ -204,6 +200,10 @@ export function AiChatPanel({
         ? t('Describe the chart you want to create...')
         : t('Ask a question about your data...');
 
+  // Latest results from the most recent agent run
+  const latestChart =
+    chartResults.length > 0 ? chartResults[chartResults.length - 1] : null;
+
   return (
     <PanelContainer>
       <Header>
@@ -224,51 +224,89 @@ export function AiChatPanel({
         {messages.map((msg, idx) => (
           <div key={idx}>
             <AiMessageBubble message={msg} />
-            {msg.role === 'assistant' && agentType === 'nl2sql' && (
-              <AiSqlPreview sql={msg.content} onCopyToEditor={onSqlGenerated} />
+            {msg.role === 'assistant' && idx === messages.length - 1 && (
+              <>
+                {agentType === 'nl2sql' && (
+                  <AiSqlPreview
+                    sql={msg.content}
+                    onCopyToEditor={onSqlGenerated}
+                  />
+                )}
+                {(agentType === 'chart' || agentType === 'dashboard') &&
+                  sqlPreview && (
+                    <AiSqlPreview
+                      sql={sqlPreview}
+                      onCopyToEditor={onSqlGenerated}
+                    />
+                  )}
+                {agentType === 'chart' && latestChart && onChartCreated && (
+                  <ResultCard
+                    href={latestChart.exploreUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={e => {
+                      e.preventDefault();
+                      onChartCreated(
+                        latestChart.chartId,
+                        latestChart.exploreUrl,
+                      );
+                    }}
+                  >
+                    <ResultLabel>{t('View Chart')}</ResultLabel>
+                    {latestChart.sliceName} ({latestChart.vizType}) →
+                  </ResultCard>
+                )}
+                {agentType === 'dashboard' &&
+                  dashboardResult &&
+                  onDashboardCreated && (
+                    <ResultCard
+                      href={dashboardResult.dashboardUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={e => {
+                        e.preventDefault();
+                        onDashboardCreated(
+                          dashboardResult.dashboardId,
+                          dashboardResult.dashboardUrl,
+                        );
+                      }}
+                    >
+                      <ResultLabel>{t('View Dashboard')}</ResultLabel>
+                      {dashboardResult.dashboardTitle} (
+                      {dashboardResult.chartCount} {t('charts')}) →
+                    </ResultCard>
+                  )}
+                {agentType === 'dashboard' &&
+                  chartResults.length > 0 &&
+                  !dashboardResult && (
+                    <div style={{ marginTop: 4 }}>
+                      {chartResults.map(cr => (
+                        <ResultCard
+                          key={cr.chartId}
+                          href={cr.exploreUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={e => {
+                            e.preventDefault();
+                            if (onChartCreated) {
+                              onChartCreated(cr.chartId, cr.exploreUrl);
+                            }
+                          }}
+                          style={{ marginBottom: 4 }}
+                        >
+                          <ResultLabel>{t('Chart')}</ResultLabel>
+                          {cr.sliceName} ({cr.vizType}) →
+                        </ResultCard>
+                      ))}
+                    </div>
+                  )}
+              </>
             )}
-            {msg.role === 'assistant' && agentType === 'chart' && (() => {
-              const chartInfo = extractChartUrl(msg.content);
-              if (chartInfo && onChartCreated) {
-                return (
-                  <ChartLink
-                    href={chartInfo.exploreUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={e => {
-                      e.preventDefault();
-                      onChartCreated(chartInfo.chartId, chartInfo.exploreUrl);
-                    }}
-                  >
-                    {t('View Chart')} →
-                  </ChartLink>
-                );
-              }
-              return null;
-            })()}
-            {msg.role === 'assistant' && agentType === 'dashboard' && (() => {
-              const dashInfo = extractDashboardUrl(msg.content);
-              if (dashInfo && onDashboardCreated) {
-                return (
-                  <ChartLink
-                    href={dashInfo.dashboardUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={e => {
-                      e.preventDefault();
-                      onDashboardCreated(dashInfo.dashboardId, dashInfo.dashboardUrl);
-                    }}
-                  >
-                    {t('View Dashboard')} →
-                  </ChartLink>
-                );
-              }
-              return null;
-            })()}
           </div>
         ))}
+        {loading && steps.length > 0 && <AiStepProgress steps={steps} />}
         {loading && streamingText && <AiStreamingText text={streamingText} />}
-        {loading && !streamingText && (
+        {loading && !streamingText && steps.length === 0 && (
           <AiStreamingText text={t('Thinking...')} />
         )}
         <div ref={messagesEndRef} />
@@ -281,7 +319,10 @@ export function AiChatPanel({
           placeholder={placeholder}
           disabled={loading}
         />
-        <SendButton onClick={handleSend} disabled={loading || !inputValue.trim()}>
+        <SendButton
+          onClick={handleSend}
+          disabled={loading || !inputValue.trim()}
+        >
           {t('Send')}
         </SendButton>
       </InputContainer>

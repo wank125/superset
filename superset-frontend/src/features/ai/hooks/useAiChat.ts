@@ -18,27 +18,42 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import type { AiChatMessage } from '../types';
+import type {
+  AiChatMessage,
+  AiStep,
+  ChartResult,
+  DashboardResult,
+} from '../types';
 import { sendChat, fetchEvents } from '../api/aiClient';
 
 const POLL_INTERVAL_MS = 500;
-const MAX_POLL_ATTEMPTS = 120; // 60 seconds
+const MAX_POLL_ATTEMPTS = 360; // 180 seconds
 
 /** Generate a stable session ID that persists for the lifetime of the hook. */
 function createSessionId(): string {
   return `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+let stepCounter = 0;
+
 export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
   const [messages, setMessages] = useState<AiChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [streamingText, setStreamingText] = useState('');
+  const [steps, setSteps] = useState<AiStep[]>([]);
+  const [chartResults, setChartResults] = useState<ChartResult[]>([]);
+  const [dashboardResult, setDashboardResult] =
+    useState<DashboardResult | null>(null);
+  const [sqlPreview, setSqlPreview] = useState<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionIdRef = useRef<string>(createSessionId());
   // Ref to track accumulated streaming text without relying on setState updater
-  // to avoid React 18 Strict Mode double-invocation of updater functions
-  // causing duplicate messages when setMessages is nested inside setStreamingText.
   const streamingTextRef = useRef('');
+  // Track step labels to avoid duplicates
+  const stepLabelsRef = useRef<Set<string>>(new Set());
+  // Track latest results via refs so finalize() can read them synchronously
+  const chartResultsRef = useRef<ChartResult[]>([]);
+  const dashboardResultRef = useRef<DashboardResult | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -47,19 +62,94 @@ export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
     }
   }, []);
 
+  const addStep = useCallback(
+    (label: string, status: AiStep['status'], type: AiStep['type'] = 'thinking', detail?: string) => {
+      // Deduplicate by label — update existing step status instead of appending
+      if (stepLabelsRef.current.has(label)) {
+        setSteps(prev =>
+          prev.map(s =>
+            s.label === label ? { ...s, status, detail: detail ?? s.detail } : s,
+          ),
+        );
+        return;
+      }
+      stepLabelsRef.current.add(label);
+      const step: AiStep = {
+        id: `step-${++stepCounter}`,
+        type,
+        label,
+        status,
+        detail,
+      };
+      setSteps(prev => [...prev, step]);
+    },
+    [],
+  );
+
+  const markAllRunningDone = useCallback(() => {
+    setSteps(prev =>
+      prev.map(s => (s.status === 'running' ? { ...s, status: 'done' as const } : s)),
+    );
+  }, []);
+
+  const resetState = useCallback(() => {
+    streamingTextRef.current = '';
+    setStreamingText('');
+    setSteps([]);
+    setChartResults([]);
+    chartResultsRef.current = [];
+    setDashboardResult(null);
+    dashboardResultRef.current = null;
+    setSqlPreview(null);
+    stepLabelsRef.current.clear();
+  }, []);
+
+  const finalize = useCallback(
+    (accumulated: string) => {
+      // If we have text chunks, use them as the assistant message
+      if (accumulated) {
+        setMessages(msgs => [
+          ...msgs,
+          { role: 'assistant' as const, content: accumulated, timestamp: Date.now() },
+        ]);
+      } else {
+        // StateGraph path: no text_chunk events, generate summary from results
+        const charts = chartResultsRef.current;
+        const dash = dashboardResultRef.current;
+        if (charts.length > 0 || dash) {
+          const lines: string[] = [];
+          if (dash) {
+            lines.push(`仪表板 "${dash.dashboardTitle}" 创建成功！`);
+            lines.push(`${dash.chartCount} 张图表已添加。`);
+            lines.push(dash.dashboardUrl);
+          } else if (charts.length === 1) {
+            lines.push(`图表 "${charts[0].sliceName}" 创建成功！`);
+            lines.push(charts[0].exploreUrl);
+          } else {
+            lines.push(`${charts.length} 张图表创建成功：`);
+            charts.forEach(c => {
+              lines.push(`- ${c.sliceName} (${c.vizType})`);
+              lines.push(`  ${c.exploreUrl}`);
+            });
+          }
+          setMessages(msgs => [
+            ...msgs,
+            { role: 'assistant' as const, content: lines.join('\n'), timestamp: Date.now() },
+          ]);
+        }
+      }
+      markAllRunningDone();
+      streamingTextRef.current = '';
+      setStreamingText('');
+      setLoading(false);
+    },
+    [markAllRunningDone],
+  );
+
   const pollEvents = useCallback(
     (channelId: string, lastId: string, attempt: number) => {
       if (attempt >= MAX_POLL_ATTEMPTS) {
-        const accumulated = streamingTextRef.current;
-        if (accumulated) {
-          setMessages(msgs => [
-            ...msgs,
-            { role: 'assistant' as const, content: accumulated, timestamp: Date.now() },
-          ]);
-        }
-        streamingTextRef.current = '';
-        setStreamingText('');
-        setLoading(false);
+        finalize(streamingTextRef.current);
         return;
       }
 
@@ -67,44 +157,119 @@ export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
         .then(response => {
           let newChunkText = '';
           for (const event of response.events) {
-            if (event.type === 'text_chunk' && event.data.content) {
-              newChunkText += event.data.content as string;
-            }
-            if (event.type === 'error') {
-              const accumulated = streamingTextRef.current;
-              if (accumulated) {
-                setMessages(msgs => [
-                  ...msgs,
-                  { role: 'assistant' as const, content: accumulated, timestamp: Date.now() },
-                ]);
+            switch (event.type) {
+              case 'thinking': {
+                const content = (event.data.content as string) || '';
+                if (content) {
+                  addStep(content, 'running', 'thinking');
+                }
+                break;
               }
-              streamingTextRef.current = '';
-              setStreamingText('');
-              setMessages(prev => [
-                ...prev,
-                {
-                  role: 'assistant' as const,
-                  content: `Error: ${event.data.message || 'Unknown error'}`,
-                  timestamp: Date.now(),
-                },
-              ]);
-              setLoading(false);
-              stopPolling();
-              return;
-            }
-            if (event.type === 'done') {
-              const fullText = streamingTextRef.current + newChunkText;
-              if (fullText) {
-                setMessages(msgs => [
-                  ...msgs,
-                  { role: 'assistant' as const, content: fullText, timestamp: Date.now() },
-                ]);
+              case 'tool_call': {
+                const tool = (event.data.tool as string) || '';
+                addStep(`调用工具: ${tool}`, 'running', 'tool_call');
+                break;
               }
-              streamingTextRef.current = '';
-              setStreamingText('');
-              setLoading(false);
-              stopPolling();
-              return;
+              case 'tool_result': {
+                // Mark the last running tool_call step as done
+                setSteps(prev => {
+                  const idx = [...prev]
+                    .reverse()
+                    .findIndex(s => s.type === 'tool_call' && s.status === 'running');
+                  if (idx === -1) return prev;
+                  const realIdx = prev.length - 1 - idx;
+                  return prev.map((s, i) =>
+                    i === realIdx ? { ...s, status: 'done' as const } : s,
+                  );
+                });
+                break;
+              }
+              case 'sql_generated': {
+                const sql = (event.data.sql as string) || '';
+                if (sql) {
+                  setSqlPreview(sql);
+                  addStep('SQL 生成完成', 'done', 'sql_generated', sql);
+                }
+                break;
+              }
+              case 'data_analyzed': {
+                const rowCount = event.data.row_count as number;
+                addStep(
+                  `数据分析完成 (${rowCount} 行)`,
+                  'done',
+                  'data_analyzed',
+                );
+                break;
+              }
+              case 'chart_created': {
+                const chart: ChartResult = {
+                  chartId: event.data.chart_id as number,
+                  sliceName: (event.data.slice_name as string) || '',
+                  vizType: (event.data.viz_type as string) || '',
+                  exploreUrl: (event.data.explore_url as string) || '',
+                };
+                chartResultsRef.current = [...chartResultsRef.current, chart];
+                setChartResults(prev => [...prev, chart]);
+                addStep(
+                  `图表创建完成: ${chart.sliceName}`,
+                  'done',
+                  'chart_created',
+                );
+                break;
+              }
+              case 'dashboard_created': {
+                const dash: DashboardResult = {
+                  dashboardId: event.data.dashboard_id as number,
+                  dashboardTitle:
+                    (event.data.dashboard_title as string) || '',
+                  dashboardUrl: (event.data.dashboard_url as string) || '',
+                  chartCount: (event.data.chart_count as number) || 0,
+                };
+                dashboardResultRef.current = dash;
+                setDashboardResult(dash);
+                addStep(
+                  `仪表板创建完成: ${dash.dashboardTitle}`,
+                  'done',
+                  'dashboard_created',
+                );
+                break;
+              }
+              case 'error_fixed': {
+                const msg = (event.data.message as string) || '';
+                addStep(msg, 'done', 'error_fixed');
+                break;
+              }
+              case 'text_chunk': {
+                const content = event.data.content as string;
+                if (content) {
+                  newChunkText += content;
+                }
+                break;
+              }
+              case 'error': {
+                const errMsg =
+                  (event.data.message as string) || 'Unknown error';
+                addStep(`错误: ${errMsg}`, 'error', 'error');
+                finalize(streamingTextRef.current);
+                setMessages(prev => [
+                  ...prev,
+                  {
+                    role: 'assistant' as const,
+                    content: `Error: ${errMsg}`,
+                    timestamp: Date.now(),
+                  },
+                ]);
+                stopPolling();
+                return;
+              }
+              case 'done': {
+                const fullText = streamingTextRef.current + newChunkText;
+                finalize(fullText);
+                stopPolling();
+                return;
+              }
+              default:
+                break;
             }
           }
 
@@ -129,7 +294,7 @@ export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
           ) as unknown as ReturnType<typeof setInterval>;
         });
     },
-    [stopPolling],
+    [stopPolling, addStep, finalize],
   );
 
   const sendMessage = useCallback(
@@ -141,8 +306,7 @@ export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
         { role: 'user', content: message, timestamp: Date.now() },
       ]);
       setLoading(true);
-      streamingTextRef.current = '';
-      setStreamingText('');
+      resetState();
 
       try {
         const { channel_id: channelId } = await sendChat({
@@ -164,18 +328,27 @@ export function useAiChat(databaseId: number, agentType: string = 'nl2sql') {
         setLoading(false);
       }
     },
-    [databaseId, agentType, loading, pollEvents],
+    [databaseId, agentType, loading, pollEvents, resetState],
   );
 
   const clearMessages = useCallback(() => {
     setMessages([]);
-    streamingTextRef.current = '';
-    setStreamingText('');
-    setLoading(false);
+    resetState();
     stopPolling();
+    setLoading(false);
     // Reset session for a fresh conversation
     sessionIdRef.current = createSessionId();
-  }, [stopPolling]);
+  }, [stopPolling, resetState]);
 
-  return { messages, loading, streamingText, sendMessage, clearMessages };
+  return {
+    messages,
+    loading,
+    streamingText,
+    sendMessage,
+    clearMessages,
+    steps,
+    chartResults,
+    dashboardResult,
+    sqlPreview,
+  };
 }

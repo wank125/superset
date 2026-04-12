@@ -41,11 +41,18 @@ export default function AiChatDrawer({
     <Drawer
       open={visible}
       onClose={onClose}
-      width={420}
+      width="min(420px, 100vw)"
       placement="right"
       title={null}
-      closable
-      styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
+      closable={false}
+      styles={{
+        body: {
+          padding: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+        },
+      }}
     >
       <AiChatPanel
         databaseId={databaseId}

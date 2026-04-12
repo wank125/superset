@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { styled, t } from '@superset-ui/core';
+import { styled } from '@superset-ui/core';
 import type { AiChatMessage } from '../types';
 
 interface AiMessageBubbleProps {
