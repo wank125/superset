@@ -58,6 +58,13 @@ AI_AGENT_TIMEOUT = 120
 AI_AGENT_STREAM_CHANNEL_PREFIX = "ai-agent-"
 
 # ---------------------------------------------------------------------------
+# LangSmith Tracing — observability for LangChain/LangGraph agents
+# ---------------------------------------------------------------------------
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ.setdefault("LANGCHAIN_API_KEY", "")
+os.environ["LANGCHAIN_PROJECT"] = "superset-ai-agent"
+
+# ---------------------------------------------------------------------------
 # LangChain Integration (Phase 7)
 # Set to True to use LangChain/LangGraph agent path instead of legacy
 # hand-written ReAct loop.  Default is False for safe rollout.
