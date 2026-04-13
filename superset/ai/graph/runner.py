@@ -25,6 +25,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from superset.ai.agent.events import AgentEvent
+from superset.ai.errors import format_user_facing_error
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ def run_graph(  # noqa: C901
     }
     config: dict[str, Any] = {
         "configurable": {"thread_id": session_id},
+        "recursion_limit": 100,
     }
 
     try:
@@ -141,7 +143,10 @@ def run_graph(  # noqa: C901
                     yield from _emit_node_events(node_name, node_output)
     except Exception as exc:
         logger.exception("Graph execution failed")
-        yield AgentEvent(type="error", data={"message": str(exc)})
+        yield AgentEvent(
+            type="error",
+            data={"message": format_user_facing_error(exc)},
+        )
 
     # Build a conversation summary for multi-turn context
     summary = _build_summary(

@@ -18,6 +18,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestExecuteSqlTool:
     """Tests for ExecuteSqlTool."""
@@ -98,6 +100,24 @@ class TestExecuteSqlTool:
         assert "Error" in result
 
 
+class TestSearchDatasetsTool:
+    """Tests for SearchDatasetsTool helpers."""
+
+    def test_fuzzy_search_handles_tables_without_verbose_name(self):
+        from types import SimpleNamespace
+
+        from superset.ai.tools.search_datasets import _fuzzy_search
+
+        table = SimpleNamespace(
+            table_name="birth_names",
+            description="Baby name records",
+        )
+
+        result = _fuzzy_search("baby", [table])
+
+        assert result[0]["table_name"] == "birth_names"
+
+
 class TestGetSchemaTool:
     """Tests for GetSchemaTool."""
 
@@ -142,3 +162,28 @@ class TestGetSchemaTool:
         assert "users" in result
         assert "orders" in result
         assert "test_db" in result
+
+
+class TestCreateChartTool:
+    """Tests for chart parameter metric normalization."""
+
+    def test_build_metric_object_maps_sum_alias_to_saved_metric(self):
+        from superset.ai.tools.create_chart import _build_metric_object
+
+        result = _build_metric_object(
+            "sum",
+            {"num": {"type": "BIGINT", "groupable": False}},
+            {"sum__num": "SUM(num)"},
+        )
+
+        assert result == "sum__num"
+
+    def test_build_metric_object_rejects_missing_metric_column(self):
+        from superset.ai.tools.create_chart import _build_metric_object
+
+        with pytest.raises(ValueError, match="Unknown metric column 'sum'"):
+            _build_metric_object(
+                "SUM(sum)",
+                {"num": {"type": "BIGINT", "groupable": False}},
+                {"sum__num": "SUM(num)"},
+            )

@@ -865,3 +865,20 @@ class TestCreateDashboard:
 
         assert result.goto == "__end__"
         assert result.update["created_dashboard"]["dashboard_id"] == 99
+
+
+class TestGraphEventEmission:
+    """Tests for graph event translation."""
+
+    def test_single_chart_subgraph_skips_duplicate_created_event(self):
+        from superset.ai.graph.runner import _emit_node_events
+
+        events = list(_emit_node_events(
+            "single_chart_subgraph",
+            {
+                "created_charts": [{"chart_id": 1}],
+                "child_events_published": True,
+            },
+        ))
+
+        assert events == []

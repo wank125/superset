@@ -70,6 +70,7 @@ Available columns:
   time: {datetime_cols}
   dimensions: {dimension_cols}
   metrics: {metric_cols}
+{business_metrics_hint}
 Requested chart count: {chart_count}
 
 Output (array of {chart_count} items):
@@ -86,6 +87,7 @@ Output (array of {chart_count} items):
 Rules:
 - If chart_count=1, output exactly 1 item
 - Different charts should show different aspects of the data
+- When business metrics are available, prefer them for KPI-related charts
 - slice_name should be in {user_language}
 """
 
@@ -531,6 +533,24 @@ def read_schema(
         if c.get("verbose_name")
     }
 
+    # Phase 13: load business metrics applicable to this table
+    business_metrics: dict[str, Any] = {}
+    try:
+        from superset.ai.metric_catalog import find_metrics_for_table
+
+        raw_metrics = find_metrics_for_table(raw["table_name"])
+        business_metrics = {
+            name: {
+                "sql": defn["sql"],
+                "description": defn.get("description", ""),
+                "aliases": defn.get("aliases", []),
+                "unit": defn.get("unit"),
+            }
+            for name, defn in raw_metrics.items()
+        }
+    except Exception:
+        logger.debug("Failed to load business metrics", exc_info=True)
+
     summary: SchemaSummary = {
         "datasource_id": raw["datasource_id"],
         "table_name": raw["table_name"],
@@ -542,6 +562,7 @@ def read_schema(
         "main_dttm_col": main_dttm,
         "column_descriptions": column_descriptions,
         "column_verbose_names": column_verbose_names,
+        "business_metrics": business_metrics,
     }
     return Command(
         update={"schema_raw": raw, "schema_summary": summary},
@@ -569,6 +590,20 @@ def plan_dashboard(
             goto="__end__",
         )
 
+    # Phase 13: build business metrics hint for dashboard planning
+    biz_metrics = summary.get("business_metrics", {})
+    if biz_metrics:
+        biz_hint_lines = [
+            f"  - {name}: {m.get('description', '')}"
+            for name, m in list(biz_metrics.items())[:5]
+        ]
+        business_metrics_hint = (
+            "Business metrics (prefer these for KPI charts):\n"
+            + "\n".join(biz_hint_lines)
+        )
+    else:
+        business_metrics_hint = ""
+
     prompt = PLAN_DASHBOARD_PROMPT.format(
         request=state["request"][:200],
         analysis_intent=goal.get("analysis_intent", "trend"),
@@ -576,6 +611,7 @@ def plan_dashboard(
         datetime_cols=summary["datetime_cols"],
         dimension_cols=summary["dimension_cols"],
         metric_cols=summary["metric_cols"],
+        business_metrics_hint=business_metrics_hint,
         chart_count=goal.get("chart_count", 1),
         user_language=goal.get("user_language", "zh"),
     )

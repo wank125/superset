@@ -1,0 +1,73 @@
+# Business Metric Catalog for AI Agent
+# Format: each entry maps a business KPI name to a SQL expression.
+# The AI agent injects matching metrics into plan_query prompts
+# so the LLM generates semantically correct SQL for business requests.
+#
+# Fields:
+#   sql:         SQL expression (no table name — added by _compile_sql)
+#   tables:      List of applicable table names (supports * suffix wildcard)
+#   description: Human-readable explanation (Chinese or English)
+#   aliases:     Synonyms / abbreviations users might say
+#   aggregation: sum | avg | count | ratio | custom
+#   unit:        Display unit (元 | % | 人 | null)
+
+gmv:
+  sql: "SUM(CASE WHEN status IN ('paid','completed') THEN amount ELSE 0 END)"
+  tables: ["orders", "dw_order_fact", "order_*"]
+  description: "已完成订单的商品金额合计（Gross Merchandise Volume）"
+  aliases: ["商品交易总额", "成交总额", "销售额"]
+  aggregation: sum
+  unit: "元"
+
+conversion_rate:
+  sql: "COUNT(CASE WHEN status='paid' THEN 1 END) * 1.0 / NULLIF(COUNT(*), 0)"
+  tables: ["orders", "dw_order_fact"]
+  description: "支付完成的订单占所有创建订单的比率"
+  aliases: ["转化率", "支付转化", "支付率"]
+  aggregation: ratio
+  unit: "%"
+
+dau:
+  sql: "COUNT(DISTINCT user_id)"
+  tables: ["user_events", "page_views", "sessions"]
+  description: "日活跃用户数"
+  aliases: ["日活", "日活用户", "活跃用户数", "DAU"]
+  aggregation: count
+  unit: "人"
+
+arpu:
+  sql: "SUM(amount) * 1.0 / NULLIF(COUNT(DISTINCT user_id), 0)"
+  tables: ["orders"]
+  description: "每用户平均收入"
+  aliases: ["人均消费", "客单价", "ARPU"]
+  aggregation: ratio
+  unit: "元"
+
+new_user_ratio:
+  sql: >-
+    COUNT(CASE WHEN DATE(first_order_date) = DATE(created_at) THEN 1 END)
+    * 1.0 / NULLIF(COUNT(DISTINCT user_id), 0)
+  tables: ["orders"]
+  description: "当日新用户（首次下单）占总用户的比例"
+  aliases: ["新用户占比", "新客率"]
+  aggregation: ratio
+  unit: "%"
+
+# ── birth_names demo metrics ──────────────────────────────────────────
+# These make the demo dataset more interesting for AI agent testing.
+
+total_births:
+  sql: "SUM(num)"
+  tables: ["birth_names"]
+  description: "出生总人数"
+  aliases: ["出生总数", "总人数", "出生人数"]
+  aggregation: sum
+  unit: "人"
+
+male_ratio:
+  sql: "SUM(CASE WHEN gender='M' THEN num ELSE 0 END) * 1.0 / NULLIF(SUM(num), 0)"
+  tables: ["birth_names"]
+  description: "男性出生占比"
+  aliases: ["男性比例", "男孩比例", "男占比"]
+  aggregation: ratio
+  unit: "%"

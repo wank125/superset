@@ -92,14 +92,14 @@ async function getGuestTokenFromSuperset(dashboardId, userId = 'embedded_user') 
 // 生成 Guest Token (使用方式 1 - 直接生成 JWT)
 // Requires API key authentication via X-API-Key header
 app.post('/api/guest-token', (req, res) => {
-    // Authenticate request
-    if (API_KEY) {
-        const apiKey = req.headers['x-api-key'];
-        if (!apiKey || apiKey !== API_KEY) {
-            return res.status(401).json({ error: 'Invalid or missing API key' });
-        }
-    } else {
-        console.warn('WARNING: TOKEN_SERVICE_API_KEY not set — endpoint is unauthenticated!');
+    // Authenticate request — API key is mandatory
+    const apiKey = req.headers['x-api-key'];
+    if (!API_KEY) {
+        console.error('FATAL: TOKEN_SERVICE_API_KEY not set. Refusing to serve unauthenticated requests.');
+        return res.status(503).json({ error: 'Server misconfigured: API key not set' });
+    }
+    if (!apiKey || apiKey !== API_KEY) {
+        return res.status(401).json({ error: 'Invalid or missing API key' });
     }
 
     try {

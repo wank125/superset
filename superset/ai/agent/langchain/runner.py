@@ -42,6 +42,7 @@ from superset.ai.agent.langchain.memory import LangChainMemoryAdapter
 from superset.ai.agent.langchain.prompts import prompt_adapter
 from superset.ai.agent.langchain.tools import tool_adapter
 from superset.ai.config import get_max_turns
+from superset.ai.errors import format_user_facing_error
 from superset.ai.runner import AgentRunner
 from superset.ai.tools.analyze_data import AnalyzeDataTool
 from superset.ai.tools.base import BaseTool
@@ -250,7 +251,7 @@ class LangChainAgentRunner(AgentRunner):
             logger.exception("LangChain agent execution failed")
             yield AgentEvent(
                 type="error",
-                data={"message": f"Agent error: {exc}"},
+                data={"message": format_user_facing_error(exc)},
             )
 
         # Persist assistant response to shared Redis key

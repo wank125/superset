@@ -35,6 +35,7 @@ class SchemaSummary(TypedDict):
     main_dttm_col: str | None
     column_descriptions: dict[str, str]  # Phase 12: col_name → description
     column_verbose_names: dict[str, str]  # Phase 12: col_name → verbose_name
+    business_metrics: dict[str, Any]  # Phase 13: business KPI → metric def
 
 
 class ResultSummary(TypedDict):

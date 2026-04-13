@@ -49,6 +49,11 @@ superset/
 └── UPDATING.md                 # Breaking changes log
 ```
 
+## Git 规约
+
+- **禁止自动提交** — 不要在用户没有明确要求的情况下执行 `git commit` 或 `git push`。完成代码修改后展示 diff 摘要，等待用户确认后再提交。
+- **用户明确要求时才提交** — 仅当用户说了"提交"、"commit"等明确指令时才执行 git commit。
+
 ## Code Standards
 
 ### TypeScript Frontend

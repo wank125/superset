@@ -18,6 +18,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from superset.ai.llm.types import LLMStreamChunk, ToolCall
 from superset.utils import json
 
@@ -135,6 +137,35 @@ class TestBaseAgent:
         assert len(events) == 1
         assert events[0].type == "error"
         assert "API error" in events[0].data["message"]
+
+    @patch("superset.ai.agent.base.get_max_turns", return_value=3)
+    @patch("superset.ai.agent.context.cache_manager")
+    def test_agent_masks_content_filter_error(self, mock_cache, mock_turns):
+        from superset.ai.agent.base import BaseAgent
+        from superset.ai.agent.context import ConversationContext
+
+        mock_provider = MagicMock()
+        mock_provider.chat_stream.side_effect = Exception(
+            "Error code: 400 - {'contentFilter': [{'level': 1}], "
+            "'error': {'code': '1301'}}"
+        )
+
+        mock_cache.cache.get.return_value = None
+        mock_cache.cache.set = MagicMock()
+        context = ConversationContext(user_id=1, session_id="test")
+
+        class TestAgent(BaseAgent):
+            def get_system_prompt(self):
+                return "test"
+
+        agent = TestAgent(mock_provider, context, tools=[])
+        events = list(agent.run("test"))
+
+        assert len(events) == 1
+        assert events[0].type == "error"
+        assert "内容安全过滤" in events[0].data["message"]
+        assert "contentFilter" not in events[0].data["message"]
+        assert "1301" not in events[0].data["message"]
 
 
 class TestConversationContext:
@@ -416,9 +447,11 @@ class TestToolOrderGuard:
         from superset.ai.agent.confirmation import is_creation_confirmed
 
         assert is_creation_confirmed("确认创建")
+        assert is_creation_confirmed("确认创建图表：按性别统计")
         assert is_creation_confirmed("go ahead")
         assert is_creation_confirmed("可以创建这个仪表板")
         assert not is_creation_confirmed("创建销售仪表盘")
+        assert not is_creation_confirmed("别创建这个图表")
         assert not is_creation_confirmed("不要创建")
 
 
@@ -544,26 +577,19 @@ class TestToolSummaryInReActLoop:
         mock_cache.cache.set = MagicMock()
 
         mock_provider = MagicMock()
-        # First turn: LLM tries to call create_dashboard (out of order)
-        # Second turn: LLM gives up with a text response
-        mock_provider.chat_stream.side_effect = [
-            iter([
-                LLMStreamChunk(
-                    tool_calls=[
-                        ToolCall(
-                            id="tc_1",
-                            name="create_dashboard",
-                            arguments={"dashboard_title": "test", "chart_ids": [1]},
-                        )
-                    ]
-                ),
-                LLMStreamChunk(finish_reason="tool_calls"),
-            ]),
-            iter([
-                LLMStreamChunk(content="I need to search first"),
-                LLMStreamChunk(finish_reason="stop"),
-            ]),
-        ]
+        # LLM tries to call create_dashboard without explicit confirmation.
+        mock_provider.chat_stream.return_value = iter([
+            LLMStreamChunk(
+                tool_calls=[
+                    ToolCall(
+                        id="tc_1",
+                        name="create_dashboard",
+                        arguments={"dashboard_title": "test", "chart_ids": [1]},
+                    )
+                ]
+            ),
+            LLMStreamChunk(finish_reason="tool_calls"),
+        ])
 
         context = ConversationContext(user_id=1, session_id="test")
         agent = DashboardAgent(
@@ -573,18 +599,18 @@ class TestToolSummaryInReActLoop:
         )
         events = list(agent.run("create a dashboard"))
 
-        # Out-of-order call should be filtered (no tool_call/tool_result events)
+        # Side-effect call should be blocked before execution.
         tool_events = [e for e in events if e.type == "tool_call"]
         assert len(tool_events) == 0
 
-        # LLM should have been called twice (filtered turn + second response)
-        assert mock_provider.chat_stream.call_count == 2
+        # Confirmation gate terminates immediately instead of asking the LLM
+        # to retry, so the side effect cannot happen accidentally.
+        assert mock_provider.chat_stream.call_count == 1
 
-        # Should end normally with a text response
         done_events = [e for e in events if e.type == "done"]
         assert len(done_events) == 1
         text_events = [e for e in events if e.type == "text_chunk"]
-        assert any("search first" in e.data["content"] for e in text_events)
+        assert any("需要你确认" in e.data["content"] for e in text_events)
 
 
 class TestChartIdempotency:
@@ -733,6 +759,29 @@ class TestStateGraphPlanning:
 
         assert normalized["metric_expr"] == "SUM(num)"
 
+    def test_gender_grouping_uses_total_metric(self):
+        from superset.ai.graph.nodes_child import _normalize_sql_plan
+
+        summary = {
+            "datasource_id": 1,
+            "table_name": "birth_names",
+            "datetime_cols": ["ds"],
+            "dimension_cols": ["gender"],
+            "metric_cols": ["num", "num_boys", "num_girls"],
+            "saved_metrics": [],
+            "saved_metric_expressions": {},
+            "main_dttm_col": "ds",
+        }
+        plan = {
+            "metric_expr": "SUM(num_boys)",
+            "dimensions": ["gender"],
+            "time_field": "ds",
+        }
+
+        normalized = _normalize_sql_plan(plan, summary)
+
+        assert normalized["metric_expr"] == "SUM(num)"
+
     def test_preferred_viz_alias_is_normalized(self):
         from superset.ai.graph.nodes_parent import _normalize_preferred_viz
 
@@ -773,3 +822,108 @@ class TestStateGraphPlanning:
             assert form_data["x_axis"] == "gender"
             assert form_data["groupby"] == []
             assert form_data["metrics"][0]["label"] == "SUM(num)"
+
+    def test_sum_alias_uses_saved_num_metric(self):
+        with patch("superset.ai.graph.normalizer._build_column_lookup") as lookup:
+            from superset.ai.graph.normalizer import compile_superset_form_data
+
+            lookup.return_value = {
+                "gender": {"type": "VARCHAR", "groupable": True},
+                "num": {"type": "BIGINT", "groupable": False},
+            }
+            chart_plan = {
+                "viz_type": "echarts_timeseries_bar",
+                "slice_name": "Birth Count by Gender",
+                "semantic_params": {
+                    "metric": "sum",
+                    "groupby": ["gender"],
+                },
+                "rationale": "User requested a bar chart.",
+            }
+            summary = {
+                "datasource_id": 1,
+                "table_name": "birth_names",
+                "datetime_cols": [],
+                "dimension_cols": ["gender"],
+                "metric_cols": ["num"],
+                "saved_metrics": ["sum__num"],
+                "saved_metric_expressions": {"sum__num": "SUM(num)"},
+                "main_dttm_col": None,
+            }
+
+            form_data = compile_superset_form_data(
+                chart_plan,
+                summary,
+                saved_metrics_lookup={"sum__num": "SUM(num)"},
+            )
+
+            assert form_data["metrics"] == ["sum__num"]
+
+    def test_rejects_aggregate_over_missing_column(self):
+        with patch("superset.ai.graph.normalizer._build_column_lookup") as lookup:
+            from superset.ai.graph.normalizer import compile_superset_form_data
+
+            lookup.return_value = {
+                "gender": {"type": "VARCHAR", "groupable": True},
+                "num": {"type": "BIGINT", "groupable": False},
+            }
+            chart_plan = {
+                "viz_type": "echarts_timeseries_bar",
+                "slice_name": "Birth Count by Gender",
+                "semantic_params": {
+                    "metric": "SUM(sum)",
+                    "groupby": ["gender"],
+                },
+                "rationale": "User requested a bar chart.",
+            }
+            summary = {
+                "datasource_id": 1,
+                "table_name": "birth_names",
+                "datetime_cols": [],
+                "dimension_cols": ["gender"],
+                "metric_cols": ["num"],
+                "saved_metrics": ["sum__num"],
+                "saved_metric_expressions": {"sum__num": "SUM(num)"},
+                "main_dttm_col": None,
+            }
+
+            with pytest.raises(ValueError, match="Unknown metric column 'sum'"):
+                compile_superset_form_data(
+                    chart_plan,
+                    summary,
+                    saved_metrics_lookup={"sum__num": "SUM(num)"},
+                )
+
+    def test_custom_sql_metric_builds_sql_metric_object(self):
+        with patch("superset.ai.graph.normalizer._build_column_lookup") as lookup:
+            from superset.ai.graph.normalizer import compile_superset_form_data
+
+            lookup.return_value = {
+                "gender": {"type": "VARCHAR", "groupable": True},
+                "num": {"type": "BIGINT", "groupable": False},
+            }
+            metric_expr = "SUM(CASE WHEN gender = 'boy' THEN num ELSE 0 END)"
+            chart_plan = {
+                "viz_type": "echarts_timeseries_bar",
+                "slice_name": "Boys by Gender",
+                "semantic_params": {
+                    "metric": metric_expr,
+                    "groupby": ["gender"],
+                },
+                "rationale": "User requested a bar chart.",
+            }
+            summary = {
+                "datasource_id": 1,
+                "table_name": "birth_names",
+                "datetime_cols": [],
+                "dimension_cols": ["gender"],
+                "metric_cols": ["num"],
+                "saved_metrics": [],
+                "saved_metric_expressions": {},
+                "main_dttm_col": None,
+            }
+
+            form_data = compile_superset_form_data(chart_plan, summary)
+
+            assert form_data["metrics"][0]["expressionType"] == "SQL"
+            assert form_data["metrics"][0]["sqlExpression"] == metric_expr

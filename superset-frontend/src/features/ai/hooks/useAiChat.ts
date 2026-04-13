@@ -185,15 +185,14 @@ export function useAiChat(
           if (dash) {
             lines.push(`仪表板 "${dash.dashboardTitle}" 创建成功！`);
             lines.push(`${dash.chartCount} 张图表已添加。`);
-            lines.push(dash.dashboardUrl);
+            lines.push(`[打开仪表板](${dash.dashboardUrl})`);
           } else if (charts.length === 1) {
             lines.push(`图表 "${charts[0].sliceName}" 创建成功！`);
-            lines.push(charts[0].exploreUrl);
+            lines.push(`[查看图表](${charts[0].exploreUrl})`);
           } else {
             lines.push(`${charts.length} 张图表创建成功：`);
             charts.forEach(c => {
-              lines.push(`- ${c.sliceName} (${c.vizType})`);
-              lines.push(`  ${c.exploreUrl}`);
+              lines.push(`- [${c.sliceName}](${c.exploreUrl}) (${c.vizType})`);
             });
           }
           setMessages(msgs => [
@@ -211,15 +210,10 @@ export function useAiChat(
       setStreamingText('');
       loadingRef.current = false;
       setLoading(false);
-
-      // Send queued clarify answer now that loading is false
-      const pending = pendingAnswerRef.current;
-      if (pending) {
-        pendingAnswerRef.current = null;
-        sendMessage(pending);
-      }
+      // NOTE: queued clarify answer is handled in sendMessage below,
+      // which checks pendingAnswerRef after loadingRef is cleared.
     },
-    [createAssistantMessage, markAllRunningDone, sendMessage],
+    [createAssistantMessage, markAllRunningDone],
   );
 
   const pollEvents = useCallback(
@@ -443,6 +437,17 @@ export function useAiChat(
         ]);
         setLoading(false);
       }
+
+      // After finalize() clears loading, check for queued clarify answer
+      const sendIfPending = () => {
+        const pending = pendingAnswerRef.current;
+        if (pending && !loadingRef.current) {
+          pendingAnswerRef.current = null;
+          sendMessage(pending);
+        }
+      };
+      // Use microtask to ensure finalize() has completed
+      Promise.resolve().then(sendIfPending);
     },
     [databaseId, agentType, pollEvents, resetState],
   );

@@ -91,6 +91,8 @@ Columns:
   saved_metrics: {saved_metrics}
 Column business descriptions (use these to map user intent to column names):
 {column_descriptions_block}
+Business metric definitions (PREFER THESE when user mentions business KPIs):
+{business_metrics_block}
 {error_hint}
 
 Output:
@@ -107,6 +109,7 @@ Output:
 Rules:
 - Only use column names from the lists above
 - Do not use saved metric names in metric_expr; convert them to SQL expressions
+- When business metrics are defined, prefer their SQL expressions over guessing
 - If the chart title mentions a dimension column or its business meaning,
   include that column in dimensions; e.g. "gender"/"性别" means dimensions
   must include "gender".
@@ -185,6 +188,13 @@ def plan_query(
         f"  {col}: {desc}" for col, desc in list(all_desc.items())[:15]
     ) or "  (no business descriptions available)"
 
+    # Phase 13: build business metrics block
+    biz_metrics = summary.get("business_metrics", {})
+    biz_lines = "\n".join(
+        f"  {name}: {m.get('description', '')}\n    SQL: {m.get('sql', '')}"
+        for name, m in list(biz_metrics.items())[:8]
+    ) or "  (no business metrics defined for this table)"
+
     prompt = PLAN_QUERY_PROMPT.format(
         analysis_intent=intent["analysis_intent"],
         slice_name=intent["slice_name"],
@@ -195,6 +205,7 @@ def plan_query(
         metric_cols=summary["metric_cols"],
         saved_metrics=summary["saved_metrics"],
         column_descriptions_block=col_desc_lines,
+        business_metrics_block=biz_lines,
         error_hint=error_hint,
     )
     try:
@@ -332,11 +343,6 @@ def _normalize_sql_plan(
     if isinstance(dimensions, str):
         dimensions = [dimensions]
     normalized["dimensions"] = [dim for dim in dimensions if dim in valid_cols]
-    normalized["metric_expr"] = _normalize_grouped_metric(
-        normalized["metric_expr"],
-        normalized["dimensions"],
-        metric_cols,
-    )
 
     if normalized.get("time_field") not in summary["datetime_cols"]:
         normalized["time_field"] = None
@@ -348,22 +354,6 @@ def _normalize_sql_plan(
             normalized["order_by"] = None
 
     return normalized
-
-
-def _normalize_grouped_metric(
-    metric_expr: str,
-    dimensions: list[str],
-    metric_cols: list[str],
-) -> str:
-    """Avoid gender-specific metrics when grouping by gender."""
-    if "gender" not in dimensions or "num" not in metric_cols:
-        return metric_expr
-
-    metric = metric_expr.strip().lower()
-    if metric in {"sum(num_boys)", "sum(num_girls)"}:
-        return "SUM(num)"
-
-    return metric_expr
 
 
 def _normalize_metric_expr(
@@ -393,6 +383,15 @@ def _normalize_metric_expr(
         if col_name == "*" or col_name in metric_cols:
             return metric
 
+    # Complex SQL expressions from metric catalog (CASE WHEN, NULLIF, etc.)
+    # Pass through if the expression contains an aggregate function keyword.
+    if re.search(
+        r"\b(SUM|COUNT|AVG|MIN|MAX)\s*\(",
+        metric,
+        re.IGNORECASE,
+    ):
+        return metric
+
     return fallback
 
 
@@ -417,7 +416,11 @@ def _compile_sql(plan: dict[str, Any], table: str) -> str:
             select_cols.append(dim)
             group_cols.append(dim)
 
-    select_cols.append(metric)
+    # Add AS alias for aggregate expressions so result column name is stable
+    if _AGG_EXPR_RE.match(metric) or "(" in metric:
+        select_cols.append(f"{metric} AS metric_val")
+    else:
+        select_cols.append(metric)
 
     sql = f"SELECT {', '.join(select_cols)} FROM {table}"  # noqa: S608
     if group_cols:
@@ -431,8 +434,32 @@ def _compile_sql(plan: dict[str, Any], table: str) -> str:
     return sql
 
 
+def _split_top_level(text: str, delimiter: str) -> list[str]:
+    """Split *text* by *delimiter*, but only at the top level (not inside parens).
+
+    Handles nested parentheses so that ``COALESCE(SUM(x), 0)`` is kept as a
+    single token when splitting by ``,``.
+    """
+    parts: list[str] = []
+    depth = 0
+    buf: list[str] = []
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(depth - 1, 0)
+        if ch == delimiter and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append("".join(buf))
+    return parts
+
+
 def _validate_sql_static(sql: str, known_cols: set[str]) -> list[str]:
-    """Static checks: no DDL/DML, LIMIT exists."""
+    """Static checks: no DDL/DML, LIMIT exists, column names are valid."""
     issues: list[str] = []
     sql_upper = sql.upper().strip()
 
@@ -444,6 +471,29 @@ def _validate_sql_static(sql: str, known_cols: set[str]) -> list[str]:
 
     if "LIMIT" not in sql_upper:
         issues.append("Missing LIMIT clause")
+
+    # Extract column references from SELECT/GROUP BY/ORDER BY clauses
+    # and verify they exist in known_cols (skip aggregate expressions and aliases)
+    select_match = re.search(
+        r"SELECT\s+(.+?)\s+FROM", sql, re.IGNORECASE | re.DOTALL,
+    )
+    if select_match and known_cols:
+        select_part = select_match.group(1)
+        # Split by commas that are NOT inside parentheses
+        select_tokens = _split_top_level(select_part, ",")
+        for part in select_tokens:
+            part = part.strip()
+            # Strip trailing AS alias
+            part = re.split(r"\s+AS\s+", part, flags=re.IGNORECASE)[0].strip()
+            # Skip aggregate expressions like SUM(col), COUNT(*)
+            if "(" in part:
+                continue
+            # Skip wildcard
+            if part == "*":
+                continue
+            # part is now a bare column name — validate it
+            if part and part.lower() not in {c.lower() for c in known_cols}:
+                issues.append(f"Unknown column '{part}' in SELECT")
 
     return issues
 

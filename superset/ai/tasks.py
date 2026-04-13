@@ -24,6 +24,7 @@ from typing import Any
 from superset.ai.agent.confirmation import is_creation_confirmed
 from superset.ai.agent.events import AgentEvent
 from superset.ai.config import get_agent_timeout
+from superset.ai.errors import format_user_facing_error
 from superset.extensions import celery_app
 from superset.utils.core import override_user
 
@@ -300,7 +301,10 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
         )
         stream.publish_event(
             channel_id,
-            AgentEvent(type="error", data={"message": str(exc)}),
+            AgentEvent(
+                type="error",
+                data={"message": format_user_facing_error(exc)},
+            ),
         )
     finally:
         _cleanup_db_session(dispose_engine=True)

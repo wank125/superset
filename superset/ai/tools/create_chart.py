@@ -66,19 +66,39 @@ def _build_metric_object(  # noqa: C901
     if not isinstance(metric_val, str):
         return metric_val
 
+    metric_val = metric_val.strip()
+
     # Check if it references a saved metric
     if metric_val in saved_metrics:
         return metric_val
 
+    if metric_val.lower() == "sum":
+        if "sum__num" in saved_metrics:
+            return "sum__num"
+        if "num" in column_lookup:
+            metric_val = "SUM(num)"
+
     # Try to parse "AGG(column)" format
-    match = _AGG_EXPR_RE.match(metric_val.strip())
+    match = _AGG_EXPR_RE.match(metric_val)
     if not match:
-        # Return as-is (might be a saved metric name or custom SQL)
-        return metric_val
+        if _looks_like_sql_expression(metric_val):
+            return {
+                "aggregate": None,
+                "column": None,
+                "expressionType": "SQL",
+                "hasCustomLabel": False,
+                "isNew": True,
+                "label": metric_val,
+                "optionName": f"metric_{uuid.uuid4().hex[:12]}",
+                "sqlExpression": metric_val,
+            }
+        raise ValueError(
+            f"Unknown metric '{metric_val}'. Use a saved metric or an "
+            "aggregate expression over an existing column."
+        )
 
     aggregate = match.group(1).upper()
     col_name = match.group(2)
-    col_info = column_lookup.get(col_name, {})
 
     # COUNT(*) uses null column reference
     if col_name == "*":
@@ -92,6 +112,14 @@ def _build_metric_object(  # noqa: C901
             "optionName": f"metric_{uuid.uuid4().hex[:12]}",
             "sqlExpression": None,
         }
+
+    col_info = column_lookup.get(col_name)
+    if not col_info:
+        available = ", ".join(sorted(column_lookup)) or "none"
+        raise ValueError(
+            f"Unknown metric column '{col_name}' in '{metric_val}'. "
+            f"Available columns: {available}."
+        )
 
     return {
         "aggregate": aggregate,
@@ -109,6 +137,16 @@ def _build_metric_object(  # noqa: C901
         "optionName": f"metric_{uuid.uuid4().hex[:12]}",
         "sqlExpression": None,
     }
+
+
+def _looks_like_sql_expression(metric_val: str) -> bool:
+    """Return True for custom SQL metric expressions."""
+    lower = metric_val.lower()
+    return (
+        "(" in metric_val
+        or " case " in f" {lower} "
+        or lower.startswith("case ")
+    )
 
 
 class CreateChartTool(BaseTool):
@@ -197,18 +235,21 @@ class CreateChartTool(BaseTool):
 
         # Auto-convert metrics to proper Superset metric objects
         params_fixed = self._normalize_params(viz_type, params_dict)
-        for key in ("metrics", "metric"):
-            if key in params_fixed:
-                val = params_fixed[key]
-                if key == "metrics" and isinstance(val, list):
-                    params_fixed[key] = [
-                        _build_metric_object(m, column_lookup, saved_metrics)
-                        for m in val
-                    ]
-                elif isinstance(val, (str, dict)):
-                    params_fixed[key] = _build_metric_object(
-                        val, column_lookup, saved_metrics
-                    )
+        try:
+            for key in ("metrics", "metric"):
+                if key in params_fixed:
+                    val = params_fixed[key]
+                    if key == "metrics" and isinstance(val, list):
+                        params_fixed[key] = [
+                            _build_metric_object(m, column_lookup, saved_metrics)
+                            for m in val
+                        ]
+                    elif isinstance(val, (str, dict)):
+                        params_fixed[key] = _build_metric_object(
+                            val, column_lookup, saved_metrics
+                        )
+        except ValueError as exc:
+            return f"Error: Parameter validation failed: {exc}"
 
         # Validate: x_axis and groupby must not overlap (causes "Duplicate labels")
         x_axis = params_fixed.get("x_axis")

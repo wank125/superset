@@ -36,6 +36,7 @@ from superset.ai.agent.confirmation import (
 from superset.ai.agent.context import ConversationContext
 from superset.ai.agent.events import AgentEvent
 from superset.ai.config import get_max_turns
+from superset.ai.errors import format_user_facing_error
 from superset.ai.llm.base import BaseLLMProvider
 from superset.ai.llm.types import LLMMessage, ToolCall
 from superset.ai.tools.base import BaseTool
@@ -207,7 +208,7 @@ class BaseAgent(ABC):
             except Exception as exc:
                 yield AgentEvent(
                     type="error",
-                    data={"message": f"LLM call failed: {exc}"},
+                    data={"message": format_user_facing_error(exc)},
                 )
                 return
 
