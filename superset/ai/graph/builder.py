@@ -63,7 +63,7 @@ def _build_single_chart_subgraph() -> StateGraph:
     return b.compile()
 
 
-def _make_subgraph_wrapper(subgraph: Any) -> Any:
+def _make_subgraph_wrapper(subgraph: Any) -> Any:  # noqa: C901
     """Create a wrapper function that maps parent state to child state and back.
 
     The wrapper:
@@ -73,7 +73,7 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:
     4. Maps the child output back to parent state (created_charts accumulation)
     """
 
-    def subgraph_node(
+    def subgraph_node(  # noqa: C901
         state: DashboardState,
     ) -> Command[Literal["after_subgraph"]]:
         idx = state.get("current_chart_index", 0)
@@ -134,6 +134,7 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:
         if created_chart:
             # Use operator.add annotation — append to created_charts list
             updates["created_charts"] = [created_chart]
+            updates["child_events_published"] = stream_mgr is not None
 
         last_error = result.get("last_error")
         if last_error:

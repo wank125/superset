@@ -72,8 +72,8 @@ def _publish_retry(
                 data={"node": node, "reason": reason, "attempt": attempt},
             ),
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to publish retry event: %s", exc)
 
 
 # ── Prompts ─────────────────────────────────────────────────────────
@@ -107,6 +107,9 @@ Output:
 Rules:
 - Only use column names from the lists above
 - Do not use saved metric names in metric_expr; convert them to SQL expressions
+- If the chart title mentions a dimension column or its business meaning,
+  include that column in dimensions; e.g. "gender"/"性别" means dimensions
+  must include "gender".
 - For trend charts: include time_field
 - For composition: include 1 low-cardinality dimension
 - LIMIT max 500
@@ -176,7 +179,7 @@ def plan_query(
     # Phase 12: build column descriptions block for the prompt
     col_desc = summary.get("column_descriptions", {})
     col_verbose = summary.get("column_verbose_names", {})
-    # Merge: prefer description, supplement with verbose_name
+    # Merge: verbose_name as base, description values take precedence
     all_desc = {**col_verbose, **col_desc}
     col_desc_lines = "\n".join(
         f"  {col}: {desc}" for col, desc in list(all_desc.items())[:15]
@@ -329,6 +332,11 @@ def _normalize_sql_plan(
     if isinstance(dimensions, str):
         dimensions = [dimensions]
     normalized["dimensions"] = [dim for dim in dimensions if dim in valid_cols]
+    normalized["metric_expr"] = _normalize_grouped_metric(
+        normalized["metric_expr"],
+        normalized["dimensions"],
+        metric_cols,
+    )
 
     if normalized.get("time_field") not in summary["datetime_cols"]:
         normalized["time_field"] = None
@@ -340,6 +348,22 @@ def _normalize_sql_plan(
             normalized["order_by"] = None
 
     return normalized
+
+
+def _normalize_grouped_metric(
+    metric_expr: str,
+    dimensions: list[str],
+    metric_cols: list[str],
+) -> str:
+    """Avoid gender-specific metrics when grouping by gender."""
+    if "gender" not in dimensions or "num" not in metric_cols:
+        return metric_expr
+
+    metric = metric_expr.strip().lower()
+    if metric in {"sum(num_boys)", "sum(num_girls)"}:
+        return "SUM(num)"
+
+    return metric_expr
 
 
 def _normalize_metric_expr(

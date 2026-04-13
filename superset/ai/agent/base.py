@@ -130,7 +130,8 @@ class BaseAgent(ABC):
         ]
         # Append conversation history, converting tool_summary to system messages
         for entry in self._context.get_history():
-            if entry["role"] == "tool_summary":
+            role = entry.get("role", "")
+            if role == "tool_summary":
                 messages.append(
                     LLMMessage(
                         role="system",
@@ -140,10 +141,11 @@ class BaseAgent(ABC):
                         ),
                     )
                 )
-            else:
+            elif role in ("user", "assistant"):
                 messages.append(
-                    LLMMessage(role=entry["role"], content=entry["content"])
+                    LLMMessage(role=role, content=entry["content"])
                 )
+            # router_meta and other metadata entries are silently skipped
         messages.append(LLMMessage(role="user", content=user_message))
 
         # Save user message to context

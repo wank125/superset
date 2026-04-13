@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from difflib import SequenceMatcher
 from typing import Any
@@ -27,6 +26,7 @@ from superset import db
 from superset.ai.tools.base import BaseTool
 from superset.connectors.sqla.models import SqlaTable
 from superset.extensions import security_manager
+from superset.utils import json
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def _can_access(table: SqlaTable) -> bool:
         return False
 
 
-def _fuzzy_search(
+def _fuzzy_search(  # noqa: C901
     table_name: str,
     accessible: list[SqlaTable],
 ) -> list[dict[str, Any]]:
@@ -61,7 +61,7 @@ def _fuzzy_search(
     by_desc: list[dict[str, Any]] = []
     for t in accessible:
         desc = (t.description or "").lower()
-        verbose = (t.verbose_name or "").lower()
+        verbose = (getattr(t, "verbose_name", None) or "").lower()
         if query in desc or query in verbose:
             by_desc.append({
                 "table_name": t.table_name,
@@ -161,7 +161,6 @@ class SearchDatasetsTool(BaseTool):
                     ),
                     "available_datasets": [],
                 },
-                ensure_ascii=False,
             )
 
         # Try exact match first (fast path — no fuzzy overhead)
@@ -186,7 +185,6 @@ class SearchDatasetsTool(BaseTool):
                         for t in sorted(accessible, key=lambda x: x.table_name)
                     ],
                 },
-                ensure_ascii=False,
             )
 
         # If best candidate has high score, do a re-search with exact name
@@ -208,7 +206,6 @@ class SearchDatasetsTool(BaseTool):
                 ),
                 "available_datasets": candidates,
             },
-            ensure_ascii=False,
         )
 
     def _build_found_result(self, table: SqlaTable) -> str:
@@ -263,5 +260,4 @@ class SearchDatasetsTool(BaseTool):
                 "columns": columns[:30],
                 "metrics": metrics[:20],
             },
-            ensure_ascii=False,
         )

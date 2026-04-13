@@ -265,7 +265,12 @@ def select_dataset(  # noqa: C901
 
     # No candidates → ask user to pick from all available datasets
     if not candidates:
-        all_datasets = _get_all_accessible_datasets(state["database_id"])
+        database_id = state.get("database_id")
+        all_datasets = (
+            _get_all_accessible_datasets(database_id)
+            if database_id is not None
+            else []
+        )
         if all_datasets:
             return Command(
                 update={
@@ -274,7 +279,9 @@ def select_dataset(  # noqa: C901
                     "clarify_options": [
                         {"label": d, "value": d} for d in all_datasets[:10]
                     ],
-                    "answer_prefix": f"{state['request']}，使用数据集 {{value}}",
+                    "answer_prefix": (
+                        f"{state.get('request', '')}，使用数据集 {{value}}"
+                    ),
                 },
                 goto="clarify_user",
             )
@@ -394,9 +401,8 @@ def select_dataset(  # noqa: C901
 def _get_all_accessible_datasets(database_id: int) -> list[str]:
     """Return table names for all datasets in the given database."""
     try:
-        from superset.connectors.sqla.models import SqlaTable
-
         from superset import db
+        from superset.connectors.sqla.models import SqlaTable
 
         tables = (
             db.session.query(SqlaTable.table_name)
@@ -419,8 +425,8 @@ def clarify_user(
 ) -> Command[Literal["__end__"]]:
     """Publish a clarification message and end the graph gracefully.
 
-    Uses ``text_chunk`` event so the existing frontend renders it as
-    a normal assistant reply — no special UI needed.
+    Sends a structured ``clarify`` event with options data for frontends
+    that support it, plus a ``text_chunk`` fallback for basic rendering.
     """
     from superset.ai.agent.events import AgentEvent
     from superset.ai.streaming.manager import AiStreamManager
@@ -443,6 +449,23 @@ def clarify_user(
     channel_id = state.get("channel_id")
     if channel_id:
         stream = AiStreamManager()
+        # Structured event for frontends that handle clarify UI
+        stream.publish_event(
+            channel_id,
+            AgentEvent(
+                type="clarify",
+                data={
+                    "question": question,
+                    "clarify_type": state.get("clarify_type", "dataset_selection"),
+                    "options": options,
+                    "context": {
+                        "original_request": state.get("request", ""),
+                        "answer_prefix": state.get("answer_prefix", ""),
+                    },
+                },
+            ),
+        )
+        # Text fallback for basic rendering
         stream.publish_event(
             channel_id,
             AgentEvent(type="text_chunk", data={"content": text}),
@@ -459,6 +482,20 @@ def read_schema(
 ) -> Command[Literal["plan_dashboard"]]:
     dataset = state["selected_dataset"]
     raw = dataset  # SearchDatasetsTool already returns complete info
+
+    # Guard: ensure datasource_id exists (defensive against re-search edge cases)
+    if not raw.get("datasource_id"):
+        return Command(
+            update={
+                "last_error": {
+                    "type": "no_datasource_id",
+                    "message": "数据集缺少 datasource_id，无法读取 Schema",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
+
     columns = raw.get("columns", [])
 
     datetime_cols = [c["name"] for c in columns if c.get("is_dttm")]

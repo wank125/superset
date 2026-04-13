@@ -65,14 +65,15 @@ class ConversationContext:
         history = self.get_history()
         history.append({"role": role, "content": content})
         # Trim: only count user/assistant entries toward the rounds budget.
-        # tool_summary entries are trimmed independently by add_tool_summary.
+        # tool_summary and router_meta are preserved (trimmed independently).
         max_messages = self._max_rounds * 2
-        non_summary = [h for h in history if h.get("role") != "tool_summary"]
-        if len(non_summary) > max_messages:
-            excess = len(non_summary) - max_messages
+        context_roles = {"user", "assistant"}
+        context_entries = [h for h in history if h.get("role") in context_roles]
+        if len(context_entries) > max_messages:
+            excess = len(context_entries) - max_messages
             new_history: list[dict[str, Any]] = []
             for entry in history:
-                if entry.get("role") != "tool_summary" and excess > 0:
+                if entry.get("role") in context_roles and excess > 0:
                     excess -= 1
                     continue
                 new_history.append(entry)

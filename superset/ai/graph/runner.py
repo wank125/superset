@@ -154,7 +154,14 @@ def run_graph(  # noqa: C901
         analysis_intent=last_analysis_intent,
         row_count=last_row_count,
     )
-    yield AgentEvent(type="done", data={"summary": summary})
+    done_data: dict[str, Any] = {"summary": summary}
+    # Embed structured data for callers (e.g. tasks.py) to extract
+    # reliably, even when child events are suppressed by child_events_published.
+    if created_charts:
+        done_data["created_charts"] = created_charts
+    if last_sql:
+        done_data["sql"] = last_sql
+    yield AgentEvent(type="done", data=done_data)
 
 
 def _emit_node_events(  # noqa: C901
@@ -170,6 +177,8 @@ def _emit_node_events(  # noqa: C901
         # The wrapper invokes the child subgraph synchronously, so
         # inner create_chart events don't appear in stream updates.
         # Emit chart_created from the wrapper's accumulated output.
+        if node_output.get("child_events_published"):
+            return
         created_charts = node_output.get("created_charts", [])
         for chart in created_charts:
             yield AgentEvent(type="chart_created", data=chart)

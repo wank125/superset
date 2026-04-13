@@ -229,12 +229,34 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 # Collect the done event to extract conversation summary
                 assistant_summary = ""
                 sql_executed = ""
+                created_chart_summaries: list[str] = []
+                done_data: dict[str, Any] = {}
                 for event in events:
                     stream.publish_event(channel_id, event)
+                    # Fallback: collect from iterator if child events are yielded
                     if event.type == "sql_generated" and event.data.get("sql"):
                         sql_executed = event.data["sql"]
-                    if event.type == "done" and event.data.get("summary"):
-                        assistant_summary = event.data["summary"]
+                    if event.type == "chart_created" and event.data:
+                        created_chart_summaries.append(
+                            f"chart_id={event.data.get('chart_id')}, "
+                            f"slice_name={event.data.get('slice_name')}, "
+                            f"viz_type={event.data.get('viz_type')}"
+                        )
+                    if event.type == "done":
+                        assistant_summary = event.data.get("summary", "")
+                        done_data = event.data
+
+                # Extract from done event (reliable even when child events
+                # are suppressed by child_events_published flag in runner)
+                if done_data.get("sql") and not sql_executed:
+                    sql_executed = done_data["sql"]
+                if done_data.get("created_charts") and not created_chart_summaries:
+                    for chart in done_data["created_charts"]:
+                        created_chart_summaries.append(
+                            f"chart_id={chart.get('chart_id')}, "
+                            f"slice_name={chart.get('slice_name')}, "
+                            f"viz_type={chart.get('viz_type')}"
+                        )
 
                 # Write assistant response back to conversation history
                 if assistant_summary:
@@ -246,6 +268,10 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                         "execute_sql",
                         f"SQL: {sql_executed[:500]}",
                     )
+
+                # Phase 11: persist created charts for "modify this chart" context
+                for chart_summary in created_chart_summaries:
+                    ctx.add_tool_summary("create_chart", chart_summary)
             else:
                 runner = create_agent_runner(
                     agent_type=agent_type,

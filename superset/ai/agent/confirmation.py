@@ -22,7 +22,8 @@ SIDE_EFFECT_TOOLS = frozenset({"create_chart", "create_dashboard"})
 
 _NEGATIVE_TERMS = (
     "不要",
-    "别",
+    "别创建",
+    "别生成",
     "先不",
     "取消",
     "不创建",
@@ -65,6 +66,8 @@ def is_creation_confirmed(message: str) -> bool:
 
     text = message.strip().lower()
     if not text:
+        return False
+    if text.startswith("别"):
         return False
     if any(term in text for term in _NEGATIVE_TERMS):
         return False

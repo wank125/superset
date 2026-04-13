@@ -101,6 +101,7 @@ class DashboardState(TypedDict, total=False):
 
     # create_chart accumulation (subgraph writes via operator.add)
     created_charts: Annotated[list[dict[str, Any]], operator.add]
+    child_events_published: bool
 
     # create_dashboard output
     created_dashboard: dict[str, Any] | None
