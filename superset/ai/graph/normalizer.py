@@ -99,6 +99,11 @@ def compile_superset_form_data(  # noqa: C901
     # includes the dimension column in GROUP BY (table uses groupby, not x_axis)
     if viz_type == "table":
         x_dim = semantic.get("x_field") or semantic.get("x_axis")
+        logger.info(
+            "R2b table check: semantic=%s, x_dim=%s, groupby_before=%s",
+            {k: v for k, v in semantic.items() if k in ("x_field", "x_axis", "groupby")},
+            x_dim, form_data.get("groupby"),
+        )
         if x_dim:
             if isinstance(x_dim, list):
                 x_dim = x_dim[0] if x_dim else None
@@ -108,6 +113,7 @@ def compile_superset_form_data(  # noqa: C901
                     form_data["groupby"] = existing + [x_dim]
                 elif not existing:
                     form_data["groupby"] = [x_dim]
+                logger.info("R2b merged: groupby_after=%s", form_data["groupby"])
 
     # R3: x_axis → always string
     x_field = semantic.get("x_field") or semantic.get("x_axis")
@@ -148,6 +154,14 @@ def compile_superset_form_data(  # noqa: C901
         and x_axis in groupby
     ):
         form_data["groupby"] = [g for g in groupby if g != x_axis]
+
+    # R7: Final safety net for table charts — if x_axis is set but groupby
+    # is empty, merge x_axis into groupby so Superset generates proper SQL.
+    if viz_type == "table":
+        x_axis = form_data.get("x_axis")
+        groupby = form_data.get("groupby")
+        if x_axis and (not groupby or groupby == []):
+            form_data["groupby"] = [x_axis]
 
     # R6: datasource and viz_type already set at top
 
