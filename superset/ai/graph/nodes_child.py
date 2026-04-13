@@ -143,7 +143,7 @@ Output:
     "time_field": "<or null>",
     "metric": "<use Planned Metric here>",
     "metrics": ["<use Planned Metric here if plural>"],
-    "groupby": ["<use Planned Groupby here>"],
+    "groupby": <use Planned Groupby array here directly>,
     "x_field": "<col for bar x-axis or null>"
   }},
   "rationale": "<one sentence>"

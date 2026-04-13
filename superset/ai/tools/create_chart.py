@@ -252,9 +252,16 @@ class CreateChartTool(BaseTool):
             return f"Error: Parameter validation failed: {exc}"
 
         # Validate: x_axis and groupby must not overlap (causes "Duplicate labels")
+        # Exception: table charts use groupby for SQL GROUP BY and x_axis for
+        # display; they intentionally overlap.
         x_axis = params_fixed.get("x_axis")
         groupby = params_fixed.get("groupby", [])
-        if x_axis and isinstance(groupby, list) and x_axis in groupby:
+        if (
+            x_axis
+            and viz_type != "table"
+            and isinstance(groupby, list)
+            and x_axis in groupby
+        ):
             params_fixed["groupby"] = [g for g in groupby if g != x_axis]
 
         # Registry-driven parameter validation

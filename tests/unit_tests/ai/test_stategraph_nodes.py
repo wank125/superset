@@ -882,3 +882,57 @@ class TestGraphEventEmission:
         ))
 
         assert events == []
+
+
+class TestCountNumberedItems:
+    """Tests for _count_numbered_items helper in nodes_parent."""
+
+    @staticmethod
+    def _cut(text: str) -> int:
+        from superset.ai.graph.nodes_parent import _count_numbered_items
+
+        return _count_numbered_items(text)
+
+    def test_empty_string(self):
+        assert self._cut("") == 0
+
+    def test_plain_text_no_numbers(self):
+        assert self._cut("画一个折线图") == 0
+
+    def test_single_item(self):
+        assert self._cut("1. 折线图") == 1
+
+    def test_sequential_dot(self):
+        assert self._cut("1.折线图 2.饼图 3.柱状图") == 3
+
+    def test_sequential_chinese_comma(self):
+        assert self._cut("1、趋势图 2、分布图") == 2
+
+    def test_sequential_paren(self):
+        assert self._cut("1) 趋势 2) 对比") == 2
+
+    def test_mixed_separators(self):
+        assert self._cut("1.趋势 2、分布 3)排名") == 3
+
+    def test_non_sequential_returns_zero(self):
+        """Skip numbering (1, 3) should return 0."""
+        assert self._cut("1.折线图 3.饼图") == 0
+
+    def test_does_not_start_at_one(self):
+        assert self._cut("2.折线图 3.饼图") == 0
+
+    def test_embedded_in_longer_text(self):
+        text = "用 birth_names 创建仪表板：1.出生趋势 2.性别比例 3.各州排名"
+        assert self._cut(text) == 3
+
+    def test_max_two_digits(self):
+        text = " ".join(f"{i}.图表{i}" for i in range(1, 13))
+        assert self._cut(text) == 12
+
+    def test_number_without_content(self):
+        """Bare '1.' without following content should not count."""
+        assert self._cut("1.") == 0
+
+    def test_number_inside_word(self):
+        """'v1.0' should not match as a numbered list item."""
+        assert self._cut("升级到v1.0版本") == 0

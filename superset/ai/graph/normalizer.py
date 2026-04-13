@@ -27,11 +27,14 @@ Six rules applied in order:
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from typing import Any
 
 from superset.ai.graph.state import ChartPlan, SchemaSummary
+
+logger = logging.getLogger(__name__)
 
 # Regex for simple aggregate expressions like "SUM(col)" or "COUNT(*)"
 _AGG_EXPR_RE = re.compile(

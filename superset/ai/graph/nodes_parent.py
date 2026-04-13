@@ -52,10 +52,15 @@ Return ONLY valid JSON.
   "target_table": "<table keyword or null>",
   "analysis_intent": "<trend|comparison|composition|distribution|kpi>",
   "preferred_viz": "<viz_type or null>",
-  "chart_count": <int, 1 for single chart>,
+  "chart_count": <int — count of distinct charts requested by the user>,
   "time_hint": "<monthly|daily|yearly|null>",
   "user_language": "zh" or "en"
 }}
+
+Rules for chart_count:
+- If the user lists multiple charts (e.g. "1.xxx 2.xxx 3.xxx"), count them exactly.
+- If the user mentions a dashboard with N chart types, chart_count = N.
+- For a single chart, chart_count = 1.
 
 Request: {request}
 """
@@ -93,6 +98,26 @@ Rules:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+
+def _count_numbered_items(text: str) -> int:
+    """Count numbered list items like '1.xxx 2.xxx' in user request text."""
+    import re as _re
+
+    # Match patterns like "1.", "1、", "1)" followed by content
+    matches = _re.findall(r"(?:^|[\s，,：:])(\d{1,2})[.、)]\s*\S", text)
+    if not matches:
+        return 0
+    # Verify sequential numbering starting from 1
+    nums = sorted(int(m) for m in matches)
+    result = nums[-1] if nums == list(range(1, nums[-1] + 1)) else 0
+    if result == 0 and text:
+        logger.debug(
+            "numbered list detection found non-sequential items: %s in %r",
+            matches,
+            text[:80],
+        )
+    return result
 
 
 def _is_string_type(t: str) -> bool:
@@ -176,6 +201,12 @@ def parse_request(
     if state.get("agent_mode") == "chart":
         goal["chart_count"] = 1
         goal["task"] = "build_chart"
+
+    # Fallback: detect chart_count from numbered lists if LLM returned 1
+    if goal.get("chart_count", 1) <= 1 and state.get("agent_mode") == "dashboard":
+        detected = _count_numbered_items(state["request"])
+        if detected > 1:
+            goal["chart_count"] = detected
 
     return Command(update={"goal": goal}, goto="search_dataset")
 
