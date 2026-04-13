@@ -32,10 +32,19 @@ const AGENT_MODES = [
   { label: 'Copilot', value: 'copilot' },
 ];
 
+const ROUTED_LABELS: Record<string, string> = {
+  nl2sql: 'SQL',
+  chart: 'Chart',
+  dashboard: 'Dashboard',
+  copilot: 'Copilot',
+  debug: 'Debug',
+};
+
 interface AiWorkspaceInputProps {
   onSend: (message: string) => void;
   loading: boolean;
   agentType: string;
+  routedAgent: string | null;
   onAgentTypeChange: (type: string) => void;
 }
 
@@ -85,6 +94,15 @@ const ModeGroup = styled.div`
   min-width: 0;
 `;
 
+const RoutedBadge = styled.span`
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: ${({ theme }) => theme.colorPrimaryBg};
+  color: ${({ theme }) => theme.colorPrimary};
+  white-space: nowrap;
+`;
+
 const SendIcon = styled.span`
   display: inline-flex;
   align-items: center;
@@ -118,6 +136,7 @@ export function AiWorkspaceInput({
   onSend,
   loading,
   agentType,
+  routedAgent,
   onAgentTypeChange,
 }: AiWorkspaceInputProps) {
   const [inputValue, setInputValue] = useState('');
@@ -175,6 +194,11 @@ export function AiWorkspaceInput({
                 onAgentTypeChange(e.target.value)
               }
             />
+            {agentType === 'auto' && routedAgent && (
+              <RoutedBadge>
+                {t('已路由')}: {ROUTED_LABELS[routedAgent] || routedAgent}
+              </RoutedBadge>
+            )}
           </ModeGroup>
           <SendButton
             buttonSize="small"

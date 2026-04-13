@@ -135,6 +135,8 @@ export function AiWorkspace() {
             dashboardResult={null}
             sqlPreview={null}
             agentType="auto"
+            routedAgent={null}
+            clarifyState={null}
           />
         )}
       </MainColumn>
@@ -180,6 +182,10 @@ function AiChatSession({
     chartResults,
     dashboardResult,
     sqlPreview,
+    routedAgent,
+    clarifyState,
+    answerClarify,
+    dismissClarify,
   } = useAiChat(databaseId, agentType, sessionId, initialMessages);
 
   const handleSend = useCallback(
@@ -213,11 +219,16 @@ function AiChatSession({
         dashboardResult={dashboardResult}
         sqlPreview={sqlPreview}
         agentType={agentType}
+        routedAgent={routedAgent}
+        clarifyState={clarifyState}
+        onClarifyAnswer={answerClarify}
+        onClarifyDismiss={dismissClarify}
       />
       <AiWorkspaceInput
         onSend={handleSend}
         loading={loading}
         agentType={agentType}
+        routedAgent={routedAgent}
         onAgentTypeChange={onAgentTypeChange}
       />
     </>

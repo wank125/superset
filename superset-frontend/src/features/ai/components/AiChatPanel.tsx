@@ -25,6 +25,7 @@ import { AiMessageBubble } from './AiMessageBubble';
 import { AiStreamingText } from './AiStreamingText';
 import { AiSqlPreview } from './AiSqlPreview';
 import { AiStepProgress } from './AiStepProgress';
+import { AiClarifyOptions } from './AiClarifyOptions';
 
 interface AiChatPanelProps {
   databaseId: number;
@@ -162,6 +163,10 @@ export function AiChatPanel({
     chartResults,
     dashboardResult,
     sqlPreview,
+    routedAgent,
+    clarifyState,
+    answerClarify,
+    dismissClarify,
   } = useAiChat(databaseId, agentType);
 
   const scrollToBottom = useCallback(() => {
@@ -311,6 +316,13 @@ export function AiChatPanel({
         {loading && streamingText && <AiStreamingText text={streamingText} />}
         {loading && !streamingText && steps.length === 0 && (
           <AiStreamingText text={t('Thinking...')} />
+        )}
+        {clarifyState && (
+          <AiClarifyOptions
+            clarifyState={clarifyState}
+            onSelect={answerClarify}
+            onDismiss={dismissClarify}
+          />
         )}
         <div ref={messagesEndRef} />
       </MessagesContainer>

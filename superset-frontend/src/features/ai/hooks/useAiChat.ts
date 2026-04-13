@@ -24,6 +24,7 @@ import type {
   AiStep,
   ChartResult,
   DashboardResult,
+  ClarifyState,
 } from '../types';
 import { sendChat, fetchEvents } from '../api/aiClient';
 
@@ -69,6 +70,8 @@ export function useAiChat(
   const [dashboardResult, setDashboardResult] =
     useState<DashboardResult | null>(null);
   const [sqlPreview, setSqlPreview] = useState<string | null>(null);
+  const [routedAgent, setRoutedAgent] = useState<string | null>(null);
+  const [clarifyState, setClarifyState] = useState<ClarifyState | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Ref to track accumulated streaming text without relying on setState updater
   const streamingTextRef = useRef('');
@@ -79,6 +82,10 @@ export function useAiChat(
   const chartResultsRef = useRef<ChartResult[]>([]);
   const dashboardResultRef = useRef<DashboardResult | null>(null);
   const latestSqlResultRef = useRef<string | null>(null);
+  // Synchronous loading flag — avoids stale-closure race in answerClarify
+  const loadingRef = useRef(false);
+  // Queued clarify answer — sent once finalize() clears loading
+  const pendingAnswerRef = useRef<string | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -155,6 +162,8 @@ export function useAiChat(
     dashboardResultRef.current = null;
     setSqlPreview(null);
     latestSqlResultRef.current = null;
+    setRoutedAgent(null);
+    setClarifyState(null);
     stepLabelsRef.current.clear();
   }, []);
 
@@ -200,9 +209,17 @@ export function useAiChat(
       }
       streamingTextRef.current = '';
       setStreamingText('');
+      loadingRef.current = false;
       setLoading(false);
+
+      // Send queued clarify answer now that loading is false
+      const pending = pendingAnswerRef.current;
+      if (pending) {
+        pendingAnswerRef.current = null;
+        sendMessage(pending);
+      }
     },
-    [createAssistantMessage, markAllRunningDone],
+    [createAssistantMessage, markAllRunningDone, sendMessage],
   );
 
   const pollEvents = useCallback(
@@ -302,8 +319,30 @@ export function useAiChat(
                 break;
               }
               case 'intent_routed': {
-                const routedAgent = (event.data.agent as string) || 'nl2sql';
-                addStep(`自动路由: ${routedAgent}`, 'done', 'intent_routed');
+                const routed = (event.data.agent as string) || 'nl2sql';
+                setRoutedAgent(routed);
+                addStep(`自动路由: ${routed}`, 'done', 'intent_routed');
+                break;
+              }
+              case 'insight_generated': {
+                const insight = (event.data.insight as string) || '';
+                if (insight) {
+                  addStep(`💡 ${insight}`, 'done', 'insight_generated');
+                }
+                break;
+              }
+              case 'clarify': {
+                setClarifyState({
+                  question: (event.data.question as string) || '请补充信息：',
+                  clarifyType: (event.data.clarify_type as string) || 'general',
+                  options: (event.data.options as ClarifyState['options']) || [],
+                  answerPrefix:
+                    (event.data.context as Record<string, string>)
+                      ?.answer_prefix || '',
+                  originalRequest:
+                    (event.data.context as Record<string, string>)
+                      ?.original_request || '',
+                });
                 break;
               }
               case 'error_fixed': {
@@ -371,8 +410,9 @@ export function useAiChat(
 
   const sendMessage = useCallback(
     async (message: string) => {
-      if (!message.trim() || loading) return;
+      if (!message.trim() || loadingRef.current) return;
 
+      loadingRef.current = true;
       setMessages(prev => [
         ...prev,
         { role: 'user', content: message, timestamp: Date.now() },
@@ -392,6 +432,7 @@ export function useAiChat(
         const { channel_id: channelId } = await sendChat(payload);
         pollEvents(channelId, '0', 0);
       } catch (err) {
+        loadingRef.current = false;
         setMessages(prev => [
           ...prev,
           {
@@ -403,17 +444,40 @@ export function useAiChat(
         setLoading(false);
       }
     },
-    [databaseId, agentType, loading, pollEvents, resetState],
+    [databaseId, agentType, pollEvents, resetState],
   );
 
   const clearMessages = useCallback(() => {
     setMessages([]);
     resetState();
     stopPolling();
+    loadingRef.current = false;
+    pendingAnswerRef.current = null;
     setLoading(false);
     // Reset session for a fresh conversation
     sessionIdRef.current = createSessionId();
   }, [stopPolling, resetState]);
+
+  const answerClarify = useCallback(
+    (value: string) => {
+      if (!clarifyState) return;
+      const message = clarifyState.answerPrefix
+        ? clarifyState.answerPrefix.replace('{value}', value)
+        : value;
+      setClarifyState(null);
+      if (loadingRef.current) {
+        // Graph still running — queue answer; finalize() will send it
+        pendingAnswerRef.current = message;
+      } else {
+        sendMessage(message);
+      }
+    },
+    [clarifyState, sendMessage],
+  );
+
+  const dismissClarify = useCallback(() => {
+    setClarifyState(null);
+  }, []);
 
   return {
     messages,
@@ -425,5 +489,9 @@ export function useAiChat(
     chartResults,
     dashboardResult,
     sqlPreview,
+    routedAgent,
+    clarifyState,
+    answerClarify,
+    dismissClarify,
   };
 }

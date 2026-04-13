@@ -25,10 +25,12 @@ export type AgentEventType =
   | 'tool_result'
   | 'sql_generated'
   | 'data_analyzed'
+  | 'insight_generated'
   | 'chart_created'
   | 'dashboard_created'
   | 'error_fixed'
   | 'intent_routed'
+  | 'clarify'
   | 'done'
   | 'error';
 
@@ -94,4 +96,20 @@ export interface AiSession {
   agentType: string;
   createdAt: number;
   updatedAt: number;
+}
+
+/** A single clarification option presented to the user. */
+export interface ClarifyOption {
+  label: string;
+  value: string;
+  description?: string;
+}
+
+/** State holding an active clarification request from the AI agent. */
+export interface ClarifyState {
+  question: string;
+  clarifyType: string;
+  options: ClarifyOption[];
+  answerPrefix: string;
+  originalRequest: string;
 }

@@ -24,11 +24,13 @@ import type {
   AiStep,
   ChartResult,
   DashboardResult,
+  ClarifyState,
 } from 'src/features/ai/types';
 import { AiMessageBubble } from './AiMessageBubble';
 import { AiStreamingText } from './AiStreamingText';
 import { AiSqlPreview } from './AiSqlPreview';
 import { AiStepProgress } from './AiStepProgress';
+import { AiClarifyOptions } from './AiClarifyOptions';
 
 interface AiWorkspaceContentProps {
   messages: AiChatMessage[];
@@ -39,9 +41,13 @@ interface AiWorkspaceContentProps {
   dashboardResult: DashboardResult | null;
   sqlPreview: string | null;
   agentType: string;
+  routedAgent: string | null;
+  clarifyState: ClarifyState | null;
   onSqlCopy?: (sql: string) => void;
   onChartClick?: (chartId: number, url: string) => void;
   onDashboardClick?: (dashboardId: number, url: string) => void;
+  onClarifyAnswer?: (value: string) => void;
+  onClarifyDismiss?: () => void;
 }
 
 const ContentArea = styled.div`
@@ -115,9 +121,13 @@ export function AiWorkspaceContent({
   dashboardResult,
   sqlPreview,
   agentType,
+  routedAgent,
+  clarifyState,
   onSqlCopy,
   onChartClick,
   onDashboardClick,
+  onClarifyAnswer,
+  onClarifyDismiss,
 }: AiWorkspaceContentProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -220,6 +230,13 @@ export function AiWorkspaceContent({
         {loading && streamingText && <AiStreamingText text={streamingText} />}
         {loading && !streamingText && steps.length === 0 && (
           <AiStreamingText text={t('思考中...')} />
+        )}
+        {clarifyState && onClarifyAnswer && onClarifyDismiss && (
+          <AiClarifyOptions
+            clarifyState={clarifyState}
+            onSelect={onClarifyAnswer}
+            onDismiss={onClarifyDismiss}
+          />
         )}
         <div ref={bottomRef} />
       </ContentInner>
