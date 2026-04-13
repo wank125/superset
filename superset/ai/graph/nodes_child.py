@@ -124,6 +124,10 @@ Choose the best chart type. Return ONLY valid JSON.
 Chart goal: {analysis_intent} — "{slice_name}"
 User preferred: {preferred_viz}
 
+Query Plan (MUST map these closely to chart parameters):
+  - Planned Metric(s): {planned_metric}
+  - Planned Groupby: {planned_dimensions}
+
 Data suitability:
 {suitability_flags}
 Columns: time={datetime_col}, numeric={numeric_cols}, low-cardinality={low_card_cols}
@@ -137,9 +141,9 @@ Output:
   "slice_name": "<chart title>",
   "semantic_params": {{
     "time_field": "<or null>",
-    "metric": "<SUM(col) — for singular, e.g. pie/kpi>",
-    "metrics": ["<SUM(col)>", ...],
-    "groupby": ["<string col>"],
+    "metric": "<use Planned Metric here>",
+    "metrics": ["<use Planned Metric here if plural>"],
+    "groupby": ["<use Planned Groupby here>"],
     "x_field": "<col for bar x-axis or null>"
   }},
   "rationale": "<one sentence>"
@@ -384,12 +388,18 @@ def _normalize_metric_expr(
             return metric
 
     # Complex SQL expressions from metric catalog (CASE WHEN, NULLIF, etc.)
-    # Pass through if the expression contains an aggregate function keyword.
+    # Pass through if the expression contains an aggregate function keyword
+    # or if it looks like a custom SQL expression.
     if re.search(
         r"\b(SUM|COUNT|AVG|MIN|MAX)\s*\(",
         metric,
         re.IGNORECASE,
     ):
+        return metric
+
+    from superset.ai.graph.normalizer import _looks_like_sql_expression
+
+    if _looks_like_sql_expression(metric):
         return metric
 
     return fallback
@@ -654,11 +664,20 @@ def select_chart(
 
     from superset.ai.chart_types.registry import get_chart_registry
 
+    # Phase 14: Inject sql_plan to prevent dimension/metric loss
+    sql_plan = state.get("sql_plan", {})
+    planned_metric = sql_plan.get("metric_expr", "SUM(num)")
+    if isinstance(planned_metric, list):
+        planned_metric = ", ".join(planned_metric)
+    planned_dimensions = json.dumps(sql_plan.get("dimensions", []))
+
     chart_ref = get_chart_registry().format_for_prompt()
     prompt = SELECT_CHART_PROMPT.format(
         analysis_intent=intent["analysis_intent"],
         slice_name=intent["slice_name"],
         preferred_viz=intent.get("preferred_viz", "auto"),
+        planned_metric=planned_metric,
+        planned_dimensions=planned_dimensions,
         suitability_flags=flag_str,
         datetime_col=result_summary.get("datetime_col"),
         numeric_cols=result_summary["numeric_cols"][:4],

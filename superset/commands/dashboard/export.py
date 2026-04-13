@@ -71,22 +71,14 @@ def get_default_position(title: str) -> dict[str, Any]:
 
 
 def append_charts(position: dict[str, Any], charts: set[Slice]) -> dict[str, Any]:
-    chart_hashes = [f"CHART-{suffix()}" for _ in charts]
+    chart_list = list(charts)
+    chart_hashes = [f"CHART-{suffix()}" for _ in chart_list]
+    width_per_chart = DEFAULT_CHART_WIDTH
+    max_charts_per_row = 12 // width_per_chart
 
-    # if we have ROOT_ID/GRID_ID, append orphan charts to a new row inside the grid
-    row_hash = None
-    if "ROOT_ID" in position and "GRID_ID" in position["ROOT_ID"]["children"]:
-        row_hash = f"ROW-N-{suffix()}"
-        position["GRID_ID"]["children"].append(row_hash)
-        position[row_hash] = {
-            "children": chart_hashes,
-            "id": row_hash,
-            "meta": {"0": "ROOT_ID", "background": "BACKGROUND_TRANSPARENT"},
-            "type": "ROW",
-            "parents": ["ROOT_ID", "GRID_ID"],
-        }
+    has_grid = "ROOT_ID" in position and "GRID_ID" in position["ROOT_ID"]["children"]
 
-    for chart_hash, chart in zip(chart_hashes, charts, strict=False):
+    for chart_hash, chart in zip(chart_hashes, chart_list, strict=False):
         position[chart_hash] = {
             "children": [],
             "id": chart_hash,
@@ -95,12 +87,25 @@ def append_charts(position: dict[str, Any], charts: set[Slice]) -> dict[str, Any
                 "height": DEFAULT_CHART_HEIGHT,
                 "sliceName": chart.slice_name,
                 "uuid": str(chart.uuid),
-                "width": DEFAULT_CHART_WIDTH,
+                "width": width_per_chart,
             },
             "type": "CHART",
         }
-        if row_hash:
-            position[chart_hash]["parents"] = ["ROOT_ID", "GRID_ID", row_hash]
+
+    if has_grid:
+        for i in range(0, len(chart_hashes), max_charts_per_row):
+            chunk = chart_hashes[i:i + max_charts_per_row]
+            row_hash = f"ROW-N-{suffix()}"
+            position["GRID_ID"]["children"].append(row_hash)
+            position[row_hash] = {
+                "children": chunk,
+                "id": row_hash,
+                "meta": {"0": "ROOT_ID", "background": "BACKGROUND_TRANSPARENT"},
+                "type": "ROW",
+                "parents": ["ROOT_ID", "GRID_ID"],
+            }
+            for chart_hash in chunk:
+                position[chart_hash]["parents"] = ["ROOT_ID", "GRID_ID", row_hash]
 
     return position
 
