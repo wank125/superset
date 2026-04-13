@@ -117,6 +117,12 @@ class DashboardState(TypedDict, total=False):
     clarify_options: list[dict] | None  # [{"label", "value", "description"}]
     answer_prefix: str | None          # 供上下文参考
 
+    # Phase 14: chart modification
+    previous_charts: list[dict[str, Any]]       # 上一轮创建的图表（从 tool_summary 提取）
+    reference_chart_id: int | None              # 前端指定要修改的图表 ID（可选）
+    existing_chart: dict[str, Any] | None       # load_existing_chart 加载的完整图表
+    modification: dict[str, Any] | None         # apply_chart_modification 计算的变更集
+
     # Error tracking
     last_error: dict[str, Any] | None
 

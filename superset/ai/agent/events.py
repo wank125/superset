@@ -31,6 +31,7 @@ EventType = Literal[
     "data_analyzed",
     "insight_generated",  # Phase 11: data insight text
     "chart_created",
+    "chart_updated",    # Phase 14: existing chart modified
     "dashboard_created",
     "error_fixed",
     "intent_routed",

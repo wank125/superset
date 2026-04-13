@@ -17,13 +17,17 @@
 """Parent graph nodes — dashboard-level orchestration.
 
 Nodes:
-  P1 parse_request      [LLM]
-  P2 search_dataset     [Code]
-  P3 select_dataset     [Code]
-  P3b clarify_user      [Code]
-  P4 read_schema        [Code]
-  P5 plan_dashboard     [LLM]
-  P6 create_dashboard   [Code]
+  P0  classify_intent          [Code + optional LLM]
+  P0b load_existing_chart      [Code]
+  P0c apply_chart_modification [LLM]
+  P0d update_chart             [Code]
+  P1  parse_request            [LLM]
+  P2  search_dataset           [Code]
+  P3  select_dataset           [Code]
+  P3b clarify_user             [Code]
+  P4  read_schema              [Code]
+  P5  plan_dashboard           [LLM]
+  P6  create_dashboard         [Code]
 """
 
 from __future__ import annotations
@@ -198,6 +202,310 @@ def _normalize_preferred_viz(value: Any) -> str | None:
     from superset.ai.chart_types.registry import get_chart_registry
 
     return normalized if get_chart_registry().get(normalized) else None
+
+
+# ── Phase 14: chart modification prompts ──────────────────────────
+
+
+CLASSIFY_INTENT_PROMPT = """\
+Classify this request as 'new' or 'modify'.
+
+'modify' examples:
+  - "改成折线图" / "change to line chart"
+  - "加一个过滤" / "add filter"
+  - "把第一个图改一下" / "update the first chart"
+  - "那个饼图换成柱状图"
+  - "颜色换成红色" / "change color to red"
+
+'new' examples:
+  - "帮我做一个销售趋势图"
+  - "创建 birth_names 的分析"
+  - "用 messages 表创建仪表板"
+
+Respond ONLY: {{"intent": "new"}} or {{"intent": "modify"}}
+
+Request: {request}
+"""
+
+MODIFY_CHART_PROMPT = """\
+The user wants to modify an existing chart. Return ONLY valid JSON.
+
+Existing chart:
+  viz_type: {viz_type}
+  slice_name: {slice_name}
+  current params: {form_data_summary}
+
+Available viz types: echarts_timeseries_bar, echarts_timeseries_line, pie, table, big_number_total
+
+User request: {request}
+
+Return the modifications to apply:
+{{
+  "viz_type": "<new viz_type or same>",
+  "slice_name": "<new name or same>",
+  "param_changes": {{
+    "<key>": "<value>"
+  }}
+}}
+
+Rules:
+- Only include keys that need to change in param_changes
+- If viz_type changes, update it at the top level
+- Keep slice_name the same unless user explicitly asks to rename
+- For filter changes, use adhoc_filters array
+- For metric changes, use metrics (list) or metric (single)
+"""
+
+
+# ── Node P0: classify_intent [Code + optional LLM] ────────────────
+
+
+def classify_intent(
+    state: DashboardState,
+) -> Command[Literal["parse_request", "load_existing_chart"]]:
+    """Classify user intent as 'new' or 'modify'.
+
+    Fast path: if no previous charts exist or no modify keywords in request,
+    route directly to parse_request (zero LLM overhead).
+    Slow path: LLM confirms when modify keywords are present.
+    """
+    has_previous = bool(state.get("previous_charts"))
+    request_text = state.get("request", "").lower()
+
+    # Fast path: no history or no modify keywords → new
+    modify_keywords = [
+        "改", "换", "修改", "更新", "变成", "换成", "调",
+        "change", "update", "modify", "switch", "replace", "turn into",
+    ]
+    if not has_previous or not any(kw in request_text for kw in modify_keywords):
+        return Command(goto="parse_request")
+
+    # Slow path: LLM confirmation
+    try:
+        result = llm_call_json(
+            CLASSIFY_INTENT_PROMPT.format(request=state["request"][:300]),
+        )
+        intent = result.get("intent", "new")
+    except Exception:
+        intent = "new"  # fallback to new on LLM failure
+
+    if intent == "modify":
+        logger.info("classify_intent: modify path for request=%r", state["request"][:80])
+        return Command(goto="load_existing_chart")
+    return Command(goto="parse_request")
+
+
+# ── Node P0b: load_existing_chart [Code] ──────────────────────────
+
+
+def load_existing_chart(
+    state: DashboardState,
+) -> Command[Literal["apply_chart_modification", "parse_request"]]:
+    """Load the most recent chart from Superset DB for modification."""
+    from superset import db
+    from superset.models.slice import Slice
+
+    previous = state.get("previous_charts", [])
+    if not previous:
+        return Command(goto="parse_request")
+
+    # Determine target: reference_chart_id or most recent
+    ref_id = state.get("reference_chart_id")
+    target = (
+        next((c for c in previous if c.get("chart_id") == ref_id), previous[-1])
+        if ref_id
+        else previous[-1]
+    )
+
+    chart_id = target.get("chart_id")
+    if not chart_id:
+        logger.warning("load_existing_chart: no chart_id in target %s", target)
+        return Command(goto="parse_request")
+
+    slice_obj = db.session.get(Slice, chart_id)
+    if not slice_obj:
+        logger.warning("load_existing_chart: Slice #%s not found", chart_id)
+        return Command(goto="parse_request")
+
+    # Permission check: verify current user can write charts and access datasource
+    try:
+        from superset.extensions import security_manager
+
+        if not security_manager.can_access("can_write", "Chart"):
+            logger.warning("load_existing_chart: user lacks Chart write permission")
+            return Command(goto="parse_request")
+    except Exception:
+        logger.warning("load_existing_chart: permission check failed")
+        return Command(goto="parse_request")
+
+    return Command(
+        update={
+            "existing_chart": {
+                "chart_id": slice_obj.id,
+                "slice_name": slice_obj.slice_name,
+                "viz_type": slice_obj.viz_type,
+                "form_data": json.loads(slice_obj.params or "{}"),
+                "datasource_id": slice_obj.datasource_id,
+            },
+        },
+        goto="apply_chart_modification",
+    )
+
+
+# ── Node P0c: apply_chart_modification [LLM] ──────────────────────
+
+
+def apply_chart_modification(
+    state: DashboardState,
+) -> Command[Literal["update_chart", "__end__"]]:
+    """Use LLM to compute changes for the existing chart."""
+    existing = state.get("existing_chart", {})
+    if not existing:
+        return Command(
+            update={
+                "last_error": {
+                    "type": "no_existing_chart",
+                    "message": "未加载到已有图表",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
+
+    form_data = existing.get("form_data", {})
+    # Build a concise summary for the prompt (avoid token bloat)
+    form_summary_keys = {
+        "viz_type", "metrics", "metric", "groupby", "x_axis",
+        "granularity_sqla", "time_range", "adhoc_filters", "columns",
+        "row_limit",
+    }
+    form_summary = {k: form_data[k] for k in form_summary_keys if k in form_data}
+
+    prompt = MODIFY_CHART_PROMPT.format(
+        viz_type=existing.get("viz_type", ""),
+        slice_name=existing.get("slice_name", ""),
+        form_data_summary=json.dumps(form_summary)[:500],
+        request=state["request"][:300],
+    )
+
+    try:
+        changes = llm_call_json(prompt)
+    except ValueError as exc:
+        logger.warning("apply_chart_modification LLM error: %s", exc)
+        return Command(
+            update={
+                "last_error": {
+                    "type": "modify_parse_error",
+                    "message": f"修改方案解析失败: {exc}",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
+
+    # Merge changes into form_data
+    new_form_data = {**form_data}
+    param_changes = changes.get("param_changes", {})
+    new_form_data.update(param_changes)
+
+    new_viz_type = changes.get("viz_type") or existing.get("viz_type", "")
+    new_form_data["viz_type"] = new_viz_type
+
+    new_slice_name = changes.get("slice_name") or existing.get("slice_name", "")
+
+    return Command(
+        update={
+            "modification": {
+                "chart_id": existing["chart_id"],
+                "new_viz_type": new_viz_type,
+                "new_slice_name": new_slice_name,
+                "new_form_data": new_form_data,
+            },
+        },
+        goto="update_chart",
+    )
+
+
+# ── Node P0d: update_chart [Code] ─────────────────────────────────
+
+
+def update_chart(
+    state: DashboardState,
+) -> Command[Literal["__end__"]]:
+    """Apply modifications to existing chart in Superset DB."""
+    from superset import db
+    from superset.models.slice import Slice
+
+    mod = state.get("modification", {})
+    chart_id = mod.get("chart_id")
+
+    if not chart_id:
+        return Command(
+            update={
+                "last_error": {
+                    "type": "no_chart_id",
+                    "message": "缺少 chart_id，无法更新图表",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
+
+    slice_obj = db.session.get(Slice, chart_id)
+    if not slice_obj:
+        return Command(
+            update={
+                "last_error": {
+                    "type": "chart_not_found",
+                    "message": f"图表 #{chart_id} 不存在",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
+
+    # Permission check: verify write access
+    try:
+        from superset.extensions import security_manager
+
+        if not security_manager.can_access("can_write", "Chart"):
+            return Command(
+                update={
+                    "last_error": {
+                        "type": "permission_denied",
+                        "message": "没有图表修改权限",
+                        "recoverable": False,
+                    },
+                },
+                goto="__end__",
+            )
+    except Exception:
+        logger.warning("update_chart: permission check failed")
+
+    slice_obj.viz_type = mod.get("new_viz_type", slice_obj.viz_type)
+    slice_obj.slice_name = mod.get("new_slice_name", slice_obj.slice_name)
+    slice_obj.params = json.dumps(mod.get("new_form_data", {}))
+    db.session.commit()
+
+    logger.info("update_chart: updated chart #%d", chart_id)
+    # Note: uses "created_chart" key (same as create_chart node) so that
+    # tasks.py persists it via add_tool_summary("create_chart", ...) for
+    # next-turn context. The "action": "updated" field distinguishes this
+    # from a newly created chart. runner.py maps this node to the
+    # "chart_updated" event type instead of "chart_created".
+    return Command(
+        update={
+            "created_chart": {
+                "chart_id": slice_obj.id,
+                "slice_name": slice_obj.slice_name,
+                "viz_type": slice_obj.viz_type,
+                "explore_url": f"/explore/?slice_id={slice_obj.id}",
+                "message": f"已更新图表 #{slice_obj.id}",
+                "action": "updated",
+            },
+        },
+        goto="__end__",
+    )
 
 
 # ── Node P1: parse_request [LLM] ───────────────────────────────────

@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 # Node → (start message, done message)
 _NODE_PROGRESS: dict[str, tuple[str, str | None]] = {
+    "classify_intent": ("判断意图...", "意图识别完成"),
+    "load_existing_chart": ("加载图表...", "图表加载完成"),
+    "apply_chart_modification": ("计算修改...", "修改方案已生成"),
+    "update_chart": ("更新图表...", None),
     "parse_request": ("理解请求...", "请求解析完成"),
     "search_dataset": ("搜索数据集...", "数据集搜索完成"),
     "select_dataset": ("选择数据集...", "数据集已确定"),
@@ -60,6 +64,7 @@ def run_graph(  # noqa: C901
     message: str,
     channel_id: str | None = None,
     conversation_history: list[dict[str, Any]] | None = None,
+    previous_charts: list[dict[str, Any]] | None = None,
 ) -> Iterator[AgentEvent]:
     """Build and execute the StateGraph, yielding real-time AgentEvents."""
     from superset.ai.graph.builder import build_chart_graph, build_dashboard_graph
@@ -86,6 +91,7 @@ def run_graph(  # noqa: C901
         "created_charts": [],
         "repair_attempts": 0,
         "sql_attempts": 0,
+        "previous_charts": previous_charts or [],
     }
     config: dict[str, Any] = {
         "configurable": {"thread_id": session_id},
@@ -195,6 +201,14 @@ def _emit_node_events(  # noqa: C901
         chart = node_output.get("created_chart")
         if chart:
             yield AgentEvent(type="chart_created", data=chart)
+        elif node_output.get("last_error"):
+            yield from _emit_last_error(node_output["last_error"])
+        return
+
+    if node_name == "update_chart":
+        chart = node_output.get("created_chart")
+        if chart:
+            yield AgentEvent(type="chart_updated", data=chart)
         elif node_output.get("last_error"):
             yield from _emit_last_error(node_output["last_error"])
         return

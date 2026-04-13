@@ -1,9 +1,9 @@
 # Superset AI Agent 开发总结
 
-> 生成日期：2026-04-12
+> 生成日期：2026-04-14
 > 分支：`feature/supersonic`
-> 提交数：16 commits (AI 相关)
-> 文件数：57 Python + 9 TypeScript
+> 提交数：30+ commits (AI 相关)
+> 文件数：70+ Python + 9 TypeScript
 
 ---
 
@@ -171,6 +171,138 @@ superset/ai/graph/
 - 超时 60s → 180s
 - 删除死代码 `useAiStream.ts`
 
+### Phase 10: E2E 测试
+
+**目标**：建立端到端自动化测试，验证 AI Agent 完整链路
+
+- `tests/ai/test_e2e_agent.py`：HTTP 测试客户端，10 个测试用例
+- 覆盖场景：NL2SQL（简单/聚合/歧义）、Chart（柱状/趋势/饼图）、Dashboard（多图表）、Debug（SQL 修复）、边界（无效类型/空消息）
+- 事件轮询 + 终端事件检测 + 控制台报告
+
+### Phase 11: 多轮对话
+
+**目标**：支持跨轮次对话上下文，让 Agent 理解追问和修正
+
+- `session_id` 绑定：`ConversationContext` 按 `user_id + session_id` 隔离，Redis 缓存最近 20 轮
+- SQL 历史摘要：`add_tool_summary()` 持久化 SQL 执行和图表创建摘要到 Redis
+- LLM insight 生成：`analyze_result` 节点调用 LLM 生成一行数据洞察
+- `parse_request` 注入 `conversation_history` 上下文
+- 新增 `insight_generated` 事件类型
+
+**关键文件**：
+- `superset/ai/agent/context.py` — `ConversationContext` 重写（Redis + trimming）
+- `superset/ai/graph/nodes_child.py` — insight 生成
+- `superset/ai/tasks.py` — tool_summary 持久化
+
+### Phase 12: 数据集模糊搜索
+
+**目标**：用户不精确指定表名时也能找到正确数据集
+
+- `SearchDatasetsTool` 4 级模糊搜索：精确匹配 → 描述匹配 → 子串匹配 → difflib 相似度（>= 0.4）
+- 列描述注入：`column_descriptions` 和 `column_verbose_names` 注入到 `plan_query` prompt
+- 候选评分：`select_dataset` 节点综合 fuzzy match_score + description bonus
+- `SchemaSummary` 新增 `column_descriptions`、`column_verbose_names` 字段
+
+**关键文件**：
+- `superset/ai/tools/search_datasets.py` — `_fuzzy_search` 4 级搜索
+- `superset/ai/graph/nodes_parent.py` — `select_dataset` 评分选择
+- `superset/ai/graph/nodes_child.py` — prompt 注入列描述
+
+### Phase 13: 业务指标目录
+
+**目标**：预定义业务指标（GMV、DAU 等），让 LLM 生成更准确的 SQL
+
+- `metric_catalog.py`：YAML 加载 + `lru_cache`，支持通配符表名匹配
+- `metric_catalog.yaml`：示例指标（gmv、conversion_rate、dau、arpu、new_user_ratio、total_births）
+- 双路径注入：`plan_query`（SQL 生成）+ `plan_dashboard`（仪表板规划）
+- `SchemaSummary` 新增 `business_metrics` 字段
+
+**关键文件**：
+- `superset/ai/metric_catalog.py` — 指标加载引擎
+- `superset/ai/metric_catalog.yaml` — 指标定义
+- `superset/ai/graph/nodes_child.py` — business_metrics_block 注入
+- `superset/ai/graph/nodes_parent.py` — dashboard planning 指标提示
+
+### Phase 14: 图表修改（未实现）
+
+**目标**：支持用户对已创建图表进行修改（改颜色、换指标、调维度等）
+
+**状态**：设计文档已完成（`docs/ai/phase14_chart_modification.md`），代码未实现。
+
+**计划内容**：
+- 4 个新节点：`classify_intent`、`load_existing_chart`、`apply_chart_modification`、`update_chart`
+- State 新增字段：`previous_charts`、`existing_chart`、`modification`
+- 意图分类：新建 vs 修改 vs 追问
+
+### Phase 15: Copilot 大管家
+
+**目标**：通用 AI 助手，可查询 Superset 资产信息
+
+- `CopilotAgent`：10 个资产查询工具
+  - 数据库：`ListDatabasesTool`、`GetDatasetDetailTool`
+  - 图表：`ListChartsTool`、`GetChartDetailTool`
+  - 仪表板：`ListDashboardsTool`、`GetDashboardDetailTool`
+  - 用户：`WhoAmITool`
+  - 查询：`QueryHistoryTool`、`SavedQueryTool`
+  - 报表：`ReportStatusTool`
+- `database_id` 可选：不指定时仅暴露查询类工具
+- Agent 注册：`commands/chat.py` `_AGENT_MAP["copilot"]`
+- API 门控：`AI_AGENT_COPILOT` feature flag
+
+**关键文件**：
+- `superset/ai/agent/copilot_agent.py` — CopilotAgent 定义
+- `superset/ai/tools/list_databases.py` 等 10 个工具文件
+- `superset/ai/prompts/copilot.py` — 系统提示词
+
+### Phase 16: 意图路由
+
+**目标**：自动识别用户意图并路由到正确的 Agent 类型
+
+- `IntentRouter`：3 步分类流程
+  1. 上下文延续检测：匹配 `is_continuation()` 判断追问
+  2. 关键词快速路径：`keyword_route()` 匹配路由规则表
+  3. LLM 分类：`llm_classify()` 兜底语义分类
+- 4 类 Agent：`nl2sql`、`chart`、`dashboard`、`copilot`
+- `tasks.py` 集成：`agent_type == "auto"` 时触发路由
+- `intent_routed` 事件：前端可展示路由决策
+
+**关键文件**：
+- `superset/ai/router/` — 路由包（router.py, rules.py, llm_classifier.py, types.py）
+- `superset/ai/tasks.py` — 路由集成
+- `superset/ai/agent/context.py` — `add_router_meta()` 路由元数据持久化
+
+### Phase 17: 澄清追问
+
+**目标**：数据集不唯一时，主动向用户确认选择
+
+- `clarify_user` 节点：发布结构化 `clarify` 事件（含选项列表）+ 文本回退
+- `select_dataset` 集成：多候选时路由到 `clarify_user`，返回选项供用户选择
+- State 字段：`clarify_question`、`clarify_type`、`clarify_options`、`answer_prefix`
+- 前端零改动：追问模式通过 text_chunk 文本回退兼容现有 UI
+
+**关键文件**：
+- `superset/ai/graph/nodes_parent.py` — `clarify_user` 节点
+- `superset/ai/graph/builder.py` — 注册 clarify_user 节点
+
+### Phase 18: 多数据集仪表板
+
+**目标**：支持跨多个 dataset 创建仪表板（如 Slack Dashboard 跨 7 个表）
+
+- 双路径模式（向后兼容）：
+  - 单表模式：保持现有 `search → select → read_schema → plan` 流程
+  - 多表模式：`parse_request → plan_dashboard（前置）→ subgraph（内含 resolve_dataset）×N`
+- 多表检测：括号正则提取 + 实际数据集验证（不依赖 LLM 输出）
+- `PLAN_DASHBOARD_PROMPT_V2`：无 schema，基于可用表列表规划
+- `_backfill_target_tables`：关键词匹配 + round-robin 回退分配
+- `resolve_dataset`：带 schema_cache 的按需数据集解析
+- `create_dashboard`：多表模式标题从 `target_tables[0]` 派生
+- 22 个新增单元测试（全部通过）
+
+**关键文件**：
+- `superset/ai/graph/state.py` — `ChartIntent.target_table` + `DashboardState.schema_cache`
+- `superset/ai/graph/nodes_parent.py` — 多表检测、V2 prompt、`_backfill_target_tables`、`resolve_dataset`、`_build_schema_summary`
+- `superset/ai/graph/builder.py` — subgraph wrapper 内嵌 resolve_dataset
+
 ---
 
 ## 三、技术栈
@@ -290,6 +422,14 @@ superset-frontend/src/features/ai/
 | `docs/ai/phase8_stategraph.md` | Phase 8 StateGraph 设计 |
 | `docs/ai/phase8_stategraph_final.md` | Phase 8 StateGraph 终稿 |
 | `docs/ai/phase9_frontend_events.md` | Phase 9 前端事件渲染 |
+| `docs/ai/phase10_e2e_test_plan.md` | Phase 10 E2E 测试 |
+| `docs/ai/phase11_multi_turn_conversation.md` | Phase 11 多轮对话 |
+| `docs/ai/phase12_dataset_discovery.md` | Phase 12 数据集模糊搜索 |
+| `docs/ai/phase13_metric_catalog.md` | Phase 13 业务指标目录 |
+| `docs/ai/phase14_chart_modification.md` | Phase 14 图表修改（未实现） |
+| `docs/ai/phase15_copilot_agent.md` | Phase 15 Copilot 大管家 |
+| `docs/ai/phase16_intent_router.md` | Phase 16 意图路由 |
+| `docs/ai/phase17_clarification_loop.md` | Phase 17 澄清追问 |
 
 ---
 

@@ -31,6 +31,44 @@ from superset.utils.core import override_user
 logger = logging.getLogger(__name__)
 
 
+def _extract_previous_charts(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract chart summaries from tool_summary entries in conversation history.
+
+    Used by Phase 14 chart modification to identify previously created charts.
+    Returns all create_chart tool_summaries from the most recent batch
+    (consecutive entries from the end of history).
+    """
+    from superset.utils import json as superset_json
+
+    charts: list[dict[str, Any]] = []
+    # Walk history in reverse, collecting consecutive create_chart summaries
+    for entry in reversed(history):
+        if (
+            entry.get("role") == "tool_summary"
+            and entry.get("tool") == "create_chart"
+        ):
+            content = entry.get("content", "")
+            data: dict[str, Any] | None = None
+            if isinstance(content, str):
+                try:
+                    parsed = superset_json.loads(content)
+                    if isinstance(parsed, dict) and "chart_id" in parsed:
+                        data = parsed
+                except (superset_json.JSONDecodeError, ValueError):
+                    pass
+            elif isinstance(content, dict) and "chart_id" in content:
+                data = content
+            if data:
+                charts.append(data)
+            else:
+                break  # stop at first unparseable entry
+        elif entry.get("role") in ("user", "assistant"):
+            break  # stop at conversation boundary
+    # Reverse to restore chronological order
+    charts.reverse()
+    return charts
+
+
 def _cleanup_db_session(*, dispose_engine: bool = False) -> None:
     """Rollback and remove the current Celery process DB session."""
     from superset import db
@@ -225,6 +263,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                     message=message,
                     channel_id=channel_id,
                     conversation_history=ctx.get_history(),
+                    previous_charts=_extract_previous_charts(ctx.get_history()),
                 )
 
                 # Collect the done event to extract conversation summary
