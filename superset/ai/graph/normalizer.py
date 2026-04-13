@@ -95,12 +95,30 @@ def compile_superset_form_data(  # noqa: C901
             groupby = [groupby]
         form_data["groupby"] = groupby
 
+    # R2b: for table-type charts, merge x_axis into groupby so the SQL
+    # includes the dimension column in GROUP BY (table uses groupby, not x_axis)
+    if viz_type == "table":
+        x_dim = semantic.get("x_field") or semantic.get("x_axis")
+        if x_dim:
+            if isinstance(x_dim, list):
+                x_dim = x_dim[0] if x_dim else None
+            if x_dim:
+                existing = form_data.get("groupby", [])
+                if isinstance(existing, list) and x_dim not in existing:
+                    form_data["groupby"] = existing + [x_dim]
+                elif not existing:
+                    form_data["groupby"] = [x_dim]
+
     # R3: x_axis → always string
     x_field = semantic.get("x_field") or semantic.get("x_axis")
-    if not x_field and viz_type == "echarts_timeseries_bar":
-        groupby = form_data.get("groupby", [])
-        if isinstance(groupby, list) and groupby:
-            x_field = groupby[0]
+    if not x_field and "echarts" in viz_type:
+        time_field = semantic.get("time_field")
+        if time_field:
+            x_field = time_field
+        else:
+            groupby = form_data.get("groupby", [])
+            if isinstance(groupby, list) and groupby:
+                x_field = groupby[0]
     if x_field is not None:
         if isinstance(x_field, list):
             x_field = x_field[0] if x_field else ""
@@ -120,14 +138,15 @@ def compile_superset_form_data(  # noqa: C901
         form_data["granularity_sqla"] = time_field
         form_data["time_range"] = "No filter"
 
-    # x_axis and groupby must not overlap
+    # x_axis and groupby must not overlap (except table, where x_axis is groupby)
     x_axis = form_data.get("x_axis")
     groupby = form_data.get("groupby", [])
-    if x_axis and viz_type == "echarts_timeseries_bar":
-        form_data["groupby"] = []
-        return form_data
-
-    if x_axis and isinstance(groupby, list) and x_axis in groupby:
+    if (
+        x_axis
+        and viz_type != "table"
+        and isinstance(groupby, list)
+        and x_axis in groupby
+    ):
         form_data["groupby"] = [g for g in groupby if g != x_axis]
 
     # R6: datasource and viz_type already set at top
