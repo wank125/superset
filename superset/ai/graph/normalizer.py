@@ -110,6 +110,12 @@ def compile_superset_form_data(  # noqa: C901
 
     # R5: time_field → granularity_sqla + time_range
     time_field = semantic.get("time_field")
+    # big_number / big_number_total require granularity_sqla;
+    # auto-fill from schema datetime cols when LLM omits time_field
+    if not time_field and viz_type in {"big_number", "big_number_total"}:
+        datetime_cols = schema_summary.get("datetime_cols", [])
+        if datetime_cols:
+            time_field = datetime_cols[0]
     if time_field:
         form_data["granularity_sqla"] = time_field
         form_data["time_range"] = "No filter"
