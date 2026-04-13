@@ -261,13 +261,13 @@ def _build_metric_object(  # noqa: C901
     if col_name == "*":
         return {
             "aggregate": aggregate,
-            "column": None,
-            "expressionType": "SIMPLE",
+            "column": {"column_name": "__count_star_placeholder__"},
+            "expressionType": "SQL",
             "hasCustomLabel": False,
             "isNew": True,
             "label": f"{aggregate}(*)",
             "optionName": f"metric_{uuid.uuid4().hex[:12]}",
-            "sqlExpression": None,
+            "sqlExpression": f"{aggregate}(*)",
         }
 
     col_info = column_lookup.get(col_name)

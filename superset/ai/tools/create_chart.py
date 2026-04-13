@@ -100,17 +100,18 @@ def _build_metric_object(  # noqa: C901
     aggregate = match.group(1).upper()
     col_name = match.group(2)
 
-    # COUNT(*) uses null column reference
+    # COUNT(*) uses SQL expression type — Superset SIMPLE metric requires
+    # column to be a non-null dict. Using SQL type avoids this constraint.
     if col_name == "*":
         return {
             "aggregate": aggregate,
-            "column": None,
-            "expressionType": "SIMPLE",
+            "column": {"column_name": "__count_star_placeholder__"},
+            "expressionType": "SQL",
             "hasCustomLabel": False,
             "isNew": True,
             "label": f"{aggregate}(*)",
             "optionName": f"metric_{uuid.uuid4().hex[:12]}",
-            "sqlExpression": None,
+            "sqlExpression": f"{aggregate}(*)",
         }
 
     col_info = column_lookup.get(col_name)

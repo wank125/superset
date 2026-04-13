@@ -936,3 +936,379 @@ class TestCountNumberedItems:
     def test_number_inside_word(self):
         """'v1.0' should not match as a numbered list item."""
         assert self._cut("升级到v1.0版本") == 0
+
+
+# ── Phase 18: multi-dataset tests ─────────────────────────────────────
+
+
+class TestBackfillTargetTables:
+    """Tests for _backfill_target_tables keyword matching."""
+
+    @staticmethod
+    def _run(intents, tables):
+        from superset.ai.graph.nodes_parent import _backfill_target_tables
+
+        _backfill_target_tables(intents, tables)
+        return intents
+
+    def test_empty_inputs(self):
+        result = self._run([], ["messages"])
+        assert result == []
+
+    def test_no_target_tables(self):
+        intents = [{"target_table": None}]
+        self._run(intents, [])
+        assert intents[0].get("target_table") is None
+
+    def test_keyword_match_from_slice_name(self):
+        intents = [
+            {"slice_name": "messages trend", "sql_hint": ""},
+            {"slice_name": "频道活跃度", "sql_hint": "from messages_channels"},
+        ]
+        self._run(intents, ["messages", "messages_channels"])
+        assert intents[0]["target_table"] == "messages"
+        assert intents[1]["target_table"] == "messages_channels"
+
+    def test_keyword_match_from_sql_hint(self):
+        intents = [
+            {"slice_name": "Trend", "sql_hint": "aggregate messages"},
+            {"slice_name": "Distribution", "sql_hint": "from users"},
+        ]
+        self._run(intents, ["messages", "users"])
+        assert intents[0]["target_table"] == "messages"
+        assert intents[1]["target_table"] == "users"
+
+    def test_round_robin_fallback(self):
+        """When no keyword matches, fall back to round-robin."""
+        intents = [
+            {"slice_name": "Chart A", "sql_hint": ""},
+            {"slice_name": "Chart B", "sql_hint": ""},
+        ]
+        self._run(intents, ["table_x", "table_y"])
+        assert intents[0]["target_table"] == "table_x"
+        assert intents[1]["target_table"] == "table_y"
+
+    def test_respects_existing_assignments(self):
+        """Don't overwrite LLM-assigned target_table."""
+        intents = [
+            {"target_table": "messages", "slice_name": "Trend", "sql_hint": ""},
+            {"slice_name": "Users", "sql_hint": ""},
+        ]
+        self._run(intents, ["messages", "users"])
+        assert intents[0]["target_table"] == "messages"
+        assert intents[1]["target_table"] == "users"
+
+    def test_stem_matching(self):
+        """Match 'user' stem to 'users' table name."""
+        intents = [
+            {"slice_name": "user distribution", "sql_hint": ""},
+        ]
+        self._run(intents, ["users"])
+        assert intents[0]["target_table"] == "users"
+
+    def test_partial_no_claim_duplicate(self):
+        """Already-claimed tables should not be re-assigned to keyword matches."""
+        intents = [
+            {"target_table": "messages", "slice_name": "Trend", "sql_hint": ""},
+            {"slice_name": "no match here", "sql_hint": ""},
+            {"slice_name": "users info", "sql_hint": ""},
+        ]
+        self._run(intents, ["messages", "users"])
+        assert intents[0]["target_table"] == "messages"
+        # intents[2] claims "users" via keyword match first
+        assert intents[2]["target_table"] == "users"
+        # intents[1] gets no table (no keyword match, no unclaimed tables left)
+        assert intents[1].get("target_table") is None
+
+
+class TestResolveDataset:
+    """Tests for resolve_dataset helper."""
+
+    def test_cache_hit(self):
+        from superset.ai.graph.nodes_parent import resolve_dataset
+
+        cached = _make_schema_summary(table_name="messages", datasource_id=5)
+        schema_cache = {"messages": cached}
+        result = resolve_dataset("messages", 1, None, schema_cache)
+        assert result is cached
+
+    def test_cache_miss_with_no_target_table(self):
+        from superset.ai.graph.nodes_parent import resolve_dataset
+
+        cached = _make_schema_summary(table_name="fallback", datasource_id=1)
+        schema_cache = {"fallback": cached}
+        result = resolve_dataset(None, 1, None, schema_cache)
+        assert result is cached
+
+    @patch("superset.ai.graph.nodes_parent._get_all_accessible_datasets")
+    @patch("superset.ai.tools.search_datasets.SearchDatasetsTool")
+    def test_search_finds_table(self, mock_tool_cls, mock_get_all):
+        from superset.ai.graph.nodes_parent import resolve_dataset
+
+        tool_instance = MagicMock()
+        tool_instance.run.return_value = json.dumps({
+            "status": "found",
+            "datasource_id": 10,
+            "table_name": "users",
+            "columns": [
+                {"name": "id", "type": "INT", "groupable": False, "is_dttm": False},
+                {"name": "name", "type": "VARCHAR(50)", "groupable": True, "is_dttm": False},
+            ],
+            "metrics": [],
+            "main_datetime_column": None,
+        })
+        mock_tool_cls.return_value = tool_instance
+
+        result = resolve_dataset("users", 1, None, {})
+        assert result is not None
+        assert result["table_name"] == "users"
+        assert result["datasource_id"] == 10
+
+    @patch("superset.ai.tools.search_datasets.SearchDatasetsTool")
+    def test_search_not_found_returns_none(self, mock_tool_cls):
+        from superset.ai.graph.nodes_parent import resolve_dataset
+
+        tool_instance = MagicMock()
+        tool_instance.run.return_value = json.dumps({
+            "status": "not_found",
+            "message": "not found",
+        })
+        mock_tool_cls.return_value = tool_instance
+
+        result = resolve_dataset("nonexistent", 1, None, {})
+        assert result is None
+
+
+class TestParseRequestMultiDataset:
+    """Tests for parse_request multi-dataset detection."""
+
+    @patch("superset.ai.graph.nodes_parent.llm_call_json")
+    @patch("superset.ai.graph.nodes_parent._get_all_accessible_datasets")
+    def test_multi_dataset_routes_to_plan_dashboard(
+        self, mock_get_all, mock_llm
+    ):
+        from superset.ai.graph.nodes_parent import parse_request
+
+        mock_llm.return_value = {
+            "task": "build_dashboard",
+            "target_table": None,
+            "target_tables": ["messages", "users"],
+            "analysis_intent": "trend",
+            "preferred_viz": None,
+            "chart_count": 2,
+            "time_hint": None,
+            "user_language": "zh",
+            "multi_dataset": True,
+        }
+        state = {
+            "request": "1.消息趋势(messages) 2.用户分布(users)",
+            "database_id": 1,
+            "agent_mode": "dashboard",
+        }
+        result = parse_request(state)
+
+        assert result.goto == "plan_dashboard"
+        assert result.update["goal"]["multi_dataset"] is True
+        assert result.update["schema_cache"] == {}
+
+    @patch("superset.ai.graph.nodes_parent.llm_call_json")
+    def test_single_table_routes_to_search_dataset(self, mock_llm):
+        from superset.ai.graph.nodes_parent import parse_request
+
+        mock_llm.return_value = {
+            "task": "build_chart",
+            "target_table": "birth_names",
+            "target_tables": None,
+            "analysis_intent": "trend",
+            "preferred_viz": None,
+            "chart_count": 1,
+            "time_hint": None,
+            "user_language": "zh",
+            "multi_dataset": False,
+        }
+        state = {
+            "request": "birth_names 趋势",
+            "database_id": 1,
+            "agent_mode": "chart",
+        }
+        result = parse_request(state)
+
+        assert result.goto == "search_dataset"
+
+    @patch("superset.ai.graph.nodes_parent.llm_call_json")
+    @patch("superset.ai.graph.nodes_parent._get_all_accessible_datasets")
+    def test_parenthesis_extraction_with_validation(
+        self, mock_get_all, mock_llm
+    ):
+        from superset.ai.graph.nodes_parent import parse_request
+
+        # LLM returns multi_dataset=false and empty target_tables
+        mock_llm.return_value = {
+            "task": "build_dashboard",
+            "target_table": None,
+            "target_tables": [],
+            "analysis_intent": "trend",
+            "preferred_viz": None,
+            "chart_count": 3,
+            "time_hint": None,
+            "user_language": "zh",
+            "multi_dataset": False,
+        }
+        # But actual datasets include messages and users
+        mock_get_all.return_value = ["messages", "messages_channels", "users"]
+
+        state = {
+            "request": "1.消息趋势(messages) 2.频道活跃(messages_channels) 3.用户分布(users)",
+            "database_id": 1,
+            "agent_mode": "dashboard",
+        }
+        result = parse_request(state)
+
+        # Should detect multi-dataset from parentheses and route to plan_dashboard
+        assert result.goto == "plan_dashboard"
+        assert result.update["goal"]["multi_dataset"] is True
+        assert len(result.update["goal"]["target_tables"]) >= 2
+
+
+class TestPlanDashboardMultiDataset:
+    """Tests for plan_dashboard V2 (multi-dataset) mode."""
+
+    @patch("superset.ai.graph.nodes_parent.llm_call_json_list")
+    @patch("superset.ai.graph.nodes_parent._get_all_accessible_datasets")
+    def test_multi_dataset_uses_v2_prompt(self, mock_get_all, mock_llm):
+        from superset.ai.graph.nodes_parent import plan_dashboard
+
+        mock_get_all.return_value = ["messages", "users", "threads"]
+        mock_llm.return_value = [
+            {
+                "chart_index": 0,
+                "analysis_intent": "trend",
+                "slice_name": "消息趋势",
+                "target_table": "messages",
+                "preferred_viz": None,
+                "sql_hint": "",
+            },
+            {
+                "chart_index": 1,
+                "analysis_intent": "distribution",
+                "slice_name": "用户分布",
+                "target_table": "users",
+                "preferred_viz": None,
+                "sql_hint": "",
+            },
+        ]
+        state = {
+            "request": "1.消息趋势(messages) 2.用户分布(users)",
+            "goal": {
+                "analysis_intent": "trend",
+                "preferred_viz": None,
+                "chart_count": 2,
+                "user_language": "zh",
+                "multi_dataset": True,
+                "target_tables": ["messages", "users"],
+            },
+            "schema_summary": None,
+            "database_id": 1,
+        }
+        result = plan_dashboard(state)
+
+        assert result.goto == "single_chart_subgraph"
+        intents = result.update["chart_intents"]
+        assert len(intents) == 2
+        assert intents[0]["target_table"] == "messages"
+        assert intents[1]["target_table"] == "users"
+
+
+class TestCreateDashboardMultiDataset:
+    """Tests for create_dashboard with multi-dataset (None target_table)."""
+
+    @patch("superset.ai.tools.create_dashboard.CreateDashboardTool")
+    def test_title_from_target_tables(self, mock_tool_cls):
+        from superset.ai.graph.nodes_parent import create_dashboard
+
+        tool_instance = MagicMock()
+        tool_instance.run.return_value = json.dumps({
+            "dashboard_id": 55,
+            "dashboard_title": "messages 仪表板",
+            "dashboard_url": "/superset/dashboard/55/",
+        })
+        mock_tool_cls.return_value = tool_instance
+
+        state = {
+            "created_charts": [{"chart_id": 1}],
+            "chart_intents": [{"chart_index": 0}],
+            "goal": {
+                "target_table": None,
+                "target_tables": ["messages", "users"],
+            },
+            "request_id": "req-multi",
+        }
+        with patch("superset.ai.graph.nodes_parent._find_existing_dashboard", return_value=None):
+            result = create_dashboard(state)
+
+        assert result.goto == "__end__"
+        assert result.update["created_dashboard"]["dashboard_id"] == 55
+        # Verify the title uses target_tables[0]
+        call_args = tool_instance.run.call_args[0][0]
+        assert call_args["dashboard_title"] == "messages 仪表板"
+
+    @patch("superset.ai.tools.create_dashboard.CreateDashboardTool")
+    def test_title_fallback_when_no_tables(self, mock_tool_cls):
+        from superset.ai.graph.nodes_parent import create_dashboard
+
+        tool_instance = MagicMock()
+        tool_instance.run.return_value = json.dumps({
+            "dashboard_id": 56,
+            "dashboard_title": "AI 仪表板",
+            "dashboard_url": "/superset/dashboard/56/",
+        })
+        mock_tool_cls.return_value = tool_instance
+
+        state = {
+            "created_charts": [{"chart_id": 1}],
+            "chart_intents": [{"chart_index": 0}],
+            "goal": {"target_table": None, "target_tables": []},
+            "request_id": "req-empty",
+        }
+        with patch("superset.ai.graph.nodes_parent._find_existing_dashboard", return_value=None):
+            result = create_dashboard(state)
+
+        call_args = tool_instance.run.call_args[0][0]
+        assert call_args["dashboard_title"] == "AI 仪表板"
+
+
+class TestCountStarMetric:
+    """Tests for COUNT(*) metric handling in normalizer and create_chart."""
+
+    def test_normalizer_count_star_metric(self):
+        from superset.ai.graph.normalizer import _build_metric_object
+
+        result = _build_metric_object("COUNT(*)", {}, {})
+        assert result["expressionType"] == "SQL"
+        assert result["sqlExpression"] == "COUNT(*)"
+        assert result["label"] == "COUNT(*)"
+
+    def test_create_chart_count_star_metric(self):
+        from superset.ai.tools.create_chart import _build_metric_object
+
+        result = _build_metric_object("COUNT(*)", {}, {})
+        assert result["expressionType"] == "SQL"
+        assert result["sqlExpression"] == "COUNT(*)"
+
+    def test_normalizer_simple_aggregate(self):
+        from superset.ai.graph.normalizer import _build_metric_object
+
+        col_lookup = {"num": {"type": "BIGINT", "groupable": False, "filterable": True, "is_dttm": False}}
+        result = _build_metric_object("SUM(num)", col_lookup, {})
+        assert result["expressionType"] == "SIMPLE"
+        assert result["aggregate"] == "SUM"
+        assert result["column"]["column_name"] == "num"
+
+    def test_create_chart_simple_aggregate(self):
+        from superset.ai.tools.create_chart import _build_metric_object
+
+        col_lookup = {"num": {"type": "BIGINT", "groupable": False, "filterable": True, "is_dttm": False}}
+        result = _build_metric_object("SUM(num)", col_lookup, {})
+        assert result["expressionType"] == "SIMPLE"
+        assert result["aggregate"] == "SUM"
+        assert result["column"]["column_name"] == "num"

@@ -59,6 +59,7 @@ class ChartIntent(TypedDict):
     slice_name: str
     sql_hint: str  # optional hint for plan_query
     preferred_viz: str | None
+    target_table: str | None  # Phase 18: per-chart target table for multi-dataset
 
 
 class ChartPlan(TypedDict):
@@ -103,6 +104,9 @@ class DashboardState(TypedDict, total=False):
     # create_chart accumulation (subgraph writes via operator.add)
     created_charts: Annotated[list[dict[str, Any]], operator.add]
     child_events_published: bool
+
+    # Phase 18: multi-dataset schema cache (table_name → SchemaSummary)
+    schema_cache: dict[str, SchemaSummary]
 
     # create_dashboard output
     created_dashboard: dict[str, Any] | None

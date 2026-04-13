@@ -79,11 +79,36 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:  # noqa: C901
         idx = state.get("current_chart_index", 0)
         intents = state.get("chart_intents", [])
         summary = state.get("schema_summary")
+        schema_cache = state.get("schema_cache") or {}
 
-        if not intents or idx >= len(intents) or not summary:
+        if not intents or idx >= len(intents):
             return Command(goto="after_subgraph")
 
         intent = intents[idx]
+
+        # Phase 18: per-chart dataset resolution
+        target_table = intent.get("target_table")
+        if target_table or not summary:
+            # Multi-dataset mode: resolve schema per chart
+            from superset.ai.graph.nodes_parent import resolve_dataset
+
+            resolved = resolve_dataset(
+                target_table,
+                state["database_id"],
+                state.get("schema_name"),
+                schema_cache,
+            )
+            if not resolved:
+                logger.warning(
+                    "Failed to resolve dataset for chart %d (table=%s)",
+                    idx,
+                    target_table,
+                )
+                return Command(goto="after_subgraph")
+            summary = resolved
+
+        if not summary:
+            return Command(goto="after_subgraph")
 
         # Build child state from parent state
         child_input: dict[str, Any] = {
@@ -129,6 +154,10 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:  # noqa: C901
 
         # Map child output back to parent state
         updates: dict[str, Any] = {}
+
+        # Phase 18: propagate schema_cache updates back to parent state
+        if schema_cache:
+            updates["schema_cache"] = schema_cache
 
         created_chart = result.get("created_chart")
         if created_chart:
