@@ -27,6 +27,7 @@ Nodes:
   P3b clarify_user             [Code]
   P4  read_schema              [Code]
   P5  plan_dashboard           [LLM]
+  P5b review_analysis          [Code]
   P6  create_dashboard         [Code]
 """
 
@@ -806,20 +807,19 @@ def select_dataset(  # noqa: C901
         if isinstance(best, dict)
         else {"table_name": best}
     )
+    # Phase 19: propagate match score so review_analysis can use it
+    base_goal = {**state.get("goal", {}), "dataset_match_score": best_score}
     if (
         "datasource_id" not in selected
         and selected.get("table_name")
     ):
-        goal = {
-            **state.get("goal", {}),
-            "target_table": selected["table_name"],
-        }
+        goal = {**base_goal, "target_table": selected["table_name"]}
         return Command(
             update={"goal": goal},
             goto="search_dataset",
         )
     return Command(
-        update={"selected_dataset": selected},
+        update={"selected_dataset": selected, "goal": base_goal},
         goto="read_schema",
     )
 
@@ -1001,7 +1001,7 @@ def read_schema(
 
 def plan_dashboard(  # noqa: C901
     state: DashboardState,
-) -> Command[Literal["single_chart_subgraph"]]:
+) -> Command[Literal["review_analysis"]]:
     goal = state.get("goal", {})
     summary = state.get("schema_summary")
     is_multi = goal.get("multi_dataset") and not summary
@@ -1109,6 +1109,260 @@ def plan_dashboard(  # noqa: C901
             # Note: do NOT reset created_charts here — operator.add reducer
             # accumulates across nodes; initial_state in runner.py sets it to []
         },
+        goto="review_analysis",
+    )
+
+
+# ── Phase 19: plan analysis confirmation helpers ───────────────────
+
+
+def _compute_confidence(state: DashboardState) -> float:
+    """Compute confidence score from risk signals. Returns 0.0-1.0."""
+    risk_score = 0.0
+
+    goal = state.get("goal", {})
+
+    # Signal 1: dataset selection uncertainty
+    if goal.get("dataset_match_score", 100) < 50:
+        risk_score += 30
+
+    # Signal 2: multi-topic (≥3 different analysis_intent values)
+    intents = state.get("chart_intents", [])
+    unique_intents = len({i.get("analysis_intent") for i in intents if i.get("analysis_intent")})
+    if unique_intents >= 3:
+        risk_score += 20
+
+    # Signal 3: dashboard mode + 3+ charts
+    if state.get("agent_mode") == "dashboard" and len(intents) >= 3:
+        risk_score += 20
+
+    # Signal 4: derived/ratio metrics present
+    summary = state.get("schema_summary") or {}
+    biz_metrics = summary.get("business_metrics", {})
+    if biz_metrics:
+        risk_score += 15
+
+    # Signal 5: no time column
+    if not summary.get("datetime_cols"):
+        risk_score += 10
+
+    # Signal 6: multi-dataset mode
+    if goal.get("multi_dataset"):
+        risk_score += 10
+
+    # Map risk_score (0-100+) to confidence (1.0-0.0)
+    confidence = max(0.0, 1.0 - risk_score / 100.0)
+    return confidence
+
+
+def _get_dataset_reason(goal: dict[str, Any], summary: dict[str, Any]) -> str:
+    """Derive a short reason string for why this dataset was selected."""
+    target = (goal.get("target_table") or "").lower()
+    table_name = (summary.get("table_name") or "").lower()
+    if target and target == table_name:
+        return "精确匹配用户指定的表名"
+    if target and target in table_name:
+        return "部分匹配用户指定的表名"
+    if target:
+        return "根据关键词匹配选择的数据集"
+    return "自动选择的数据集"
+
+
+def _describe_time_range(summary: dict[str, Any]) -> str:
+    """Describe time range availability from schema summary."""
+    dt_cols = summary.get("datetime_cols", [])
+    if not dt_cols:
+        return "未找到时间列"
+    main = summary.get("main_dttm_col")
+    if main:
+        return f"可用时间列: {main}（未指定范围，默认全量数据）"
+    return f"可用时间列: {', '.join(dt_cols[:3])}（未指定范围）"
+
+
+def _extract_assumptions(
+    goal: dict[str, Any],
+    summary: dict[str, Any],
+    intents: list[dict[str, Any]],
+) -> list[str]:
+    """Extract key assumptions and risks for the plan."""
+    assumptions: list[str] = []
+
+    # Assumption about metrics
+    metric_cols = summary.get("metric_cols", [])
+    if metric_cols:
+        assumptions.append(f"假设 {metric_cols[0]} 为主要度量指标")
+
+    # Assumption about time
+    if not goal.get("time_hint") and summary.get("datetime_cols"):
+        assumptions.append("未指定时间范围，默认使用全量数据")
+
+    # Risk: low confidence
+    match_score = goal.get("dataset_match_score", 100)
+    if match_score < 50:
+        assumptions.append(f"数据集匹配置信度较低（score={match_score}），请确认表选择是否正确")
+
+    # Risk: multi-dataset
+    if goal.get("multi_dataset"):
+        target_tables = goal.get("target_tables") or []
+        if target_tables:
+            assumptions.append(f"多数据集模式，涉及表: {', '.join(target_tables[:5])}")
+
+    return assumptions[:5]  # cap at 5
+
+
+def _build_analysis_plan(state: DashboardState, confidence: float) -> dict[str, Any]:
+    """Build a structured analysis plan from current state (no LLM)."""
+    goal = state.get("goal", {})
+    summary = state.get("schema_summary") or {}
+    intents = state.get("chart_intents", [])
+
+    return {
+        "dataset": summary.get("table_name") or goal.get("target_table", ""),
+        "dataset_reason": _get_dataset_reason(goal, summary),
+        "metrics_dimensions": {
+            "metrics": summary.get("metric_cols", [])[:5],
+            "dimensions": summary.get("dimension_cols", [])[:5],
+        },
+        "time_range": _describe_time_range(summary),
+        "charts": [
+            {
+                "index": i.get("chart_index", idx),
+                "title": i.get("slice_name", ""),
+                "intent": i.get("analysis_intent", ""),
+                "viz": i.get("preferred_viz", ""),
+                "target_table": i.get("target_table"),
+            }
+            for idx, i in enumerate(intents)
+        ],
+        "assumptions_risks": _extract_assumptions(goal, summary, intents),
+        "confidence": round(confidence, 2),
+    }
+
+
+def _format_plan_text(plan: dict[str, Any]) -> str:
+    """Format the analysis plan as readable text for text_chunk fallback."""
+    lines: list[str] = ["📋 分析计划\n"]
+
+    # Dataset
+    ds = plan.get("dataset", "")
+    reason = plan.get("dataset_reason", "")
+    if ds:
+        lines.append(f"数据集：{ds}（{reason}）")
+
+    # Metrics & Dimensions
+    md = plan.get("metrics_dimensions", {})
+    metrics = md.get("metrics", [])
+    dims = md.get("dimensions", [])
+    if metrics or dims:
+        parts = []
+        if metrics:
+            parts.append(f"指标：{', '.join(metrics[:3])}")
+        if dims:
+            parts.append(f"维度：{', '.join(dims[:3])}")
+        lines.append(" | ".join(parts))
+
+    # Time range
+    time_range = plan.get("time_range", "")
+    if time_range:
+        lines.append(f"时间：{time_range}")
+
+    # Charts
+    charts = plan.get("charts", [])
+    if charts:
+        lines.append(f"图表（{len(charts)} 张）：")
+        for chart in charts:
+            idx = chart.get("index", 0) + 1
+            title = chart.get("title", "")
+            intent = chart.get("intent", "")
+            viz = chart.get("viz", "")
+            parts = [f"  {idx}. {title}"]
+            if intent:
+                parts.append(intent)
+            if viz:
+                parts.append(viz)
+            lines.append(" — ".join(parts))
+
+    # Assumptions
+    assumptions = plan.get("assumptions_risks", [])
+    if assumptions:
+        lines.append("")
+        for a in assumptions:
+            lines.append(f"⚠ 假设：{a}")
+
+    # Confidence & action
+    confidence = plan.get("confidence", 1.0)
+    lines.append(f"\n置信度：{confidence:.0%}")
+    lines.append('💡 回复"确认执行"继续，或告诉我需要调整的地方')
+
+    return "\n".join(lines)
+
+
+def _publish_plan_event(state: DashboardState, plan: dict[str, Any]) -> None:
+    """Publish analysis_plan event + text_chunk fallback to the stream."""
+    from superset.ai.agent.events import AgentEvent
+    from superset.ai.streaming.manager import AiStreamManager
+
+    channel_id = state.get("channel_id")
+    if not channel_id:
+        return
+
+    stream = AiStreamManager()
+
+    # Structured event (for future dedicated UI)
+    stream.publish_event(
+        channel_id,
+        AgentEvent(type="analysis_plan", data=plan),
+    )
+
+    # Text fallback (for current frontend rendering)
+    text = _format_plan_text(plan)
+    stream.publish_event(
+        channel_id,
+        AgentEvent(type="text_chunk", data={"content": text}),
+    )
+
+
+# ── Node P5b: review_analysis [Code] ───────────────────────────────
+
+
+def review_analysis(
+    state: DashboardState,
+) -> Command[Literal["single_chart_subgraph", "__end__"]]:
+    """Review analysis plan — decide direct execution or plan confirmation.
+
+    Phase 19: placed after plan_dashboard, before single_chart_subgraph.
+    - If execution_mode is already "direct" (second turn after confirmation),
+      skip directly.
+    - Compute confidence from risk signals (pure code, no LLM).
+    - Low confidence → publish plan and halt (plan mode).
+    - High confidence → continue to execution (direct mode).
+    """
+    # 1. Second turn after user confirmed: skip review
+    if state.get("execution_mode") == "direct":
+        return Command(goto="single_chart_subgraph")
+
+    # 2. Compute confidence (pure code, zero LLM overhead)
+    confidence = _compute_confidence(state)
+
+    # 3. Determine mode: explicit parameter or auto-decide
+    mode = state.get("execution_mode")
+    if not mode:
+        mode = "plan" if confidence < 0.7 else "direct"
+
+    # 4. Build structured plan from current state
+    plan = _build_analysis_plan(state, confidence)
+
+    if mode == "plan":
+        # Publish plan event, terminate graph and wait for user confirmation
+        _publish_plan_event(state, plan)
+        return Command(
+            update={"analysis_plan": plan, "execution_mode": "plan"},
+            goto="__end__",
+        )
+
+    # Direct mode: continue execution
+    return Command(
+        update={"analysis_plan": plan, "execution_mode": "direct"},
         goto="single_chart_subgraph",
     )
 

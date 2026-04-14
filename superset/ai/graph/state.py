@@ -123,6 +123,10 @@ class DashboardState(TypedDict, total=False):
     existing_chart: dict[str, Any] | None       # load_existing_chart 加载的完整图表
     modification: dict[str, Any] | None         # apply_chart_modification 计算的变更集
 
+    # Phase 19: plan analysis confirmation
+    execution_mode: str | None            # "plan" | "direct" | None（None 时自动判断）
+    analysis_plan: dict[str, Any] | None  # review_analysis 输出的结构化计划
+
     # Error tracking
     last_error: dict[str, Any] | None
 

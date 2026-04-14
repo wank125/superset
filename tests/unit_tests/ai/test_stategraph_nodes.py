@@ -323,7 +323,7 @@ class TestPlanDashboard:
         }
         result = plan_dashboard(state)
 
-        assert result.goto == "single_chart_subgraph"
+        assert result.goto == "review_analysis"
         assert len(result.update["chart_intents"]) == 1
 
     @patch("superset.ai.graph.nodes_parent.llm_call_json_list")
@@ -1212,7 +1212,7 @@ class TestPlanDashboardMultiDataset:
         }
         result = plan_dashboard(state)
 
-        assert result.goto == "single_chart_subgraph"
+        assert result.goto == "review_analysis"
         intents = result.update["chart_intents"]
         assert len(intents) == 2
         assert intents[0]["target_table"] == "messages"

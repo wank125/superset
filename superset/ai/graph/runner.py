@@ -40,6 +40,7 @@ _NODE_PROGRESS: dict[str, tuple[str, str | None]] = {
     "select_dataset": ("选择数据集...", "数据集已确定"),
     "read_schema": ("读取数据结构...", "Schema 读取完成"),
     "plan_dashboard": ("规划图表...", "图表规划完成"),
+    "review_analysis": ("审核分析计划...", "计划审核完成"),
     "plan_query": ("生成查询计划...", "SQL 计划生成完成"),
     "validate_sql": ("校验 SQL...", "SQL 校验通过"),
     "execute_query": ("执行查询...", "查询执行完成"),
@@ -219,6 +220,15 @@ def _emit_node_events(  # noqa: C901
             yield AgentEvent(type="dashboard_created", data=dash)
         elif node_output.get("last_error"):
             yield from _emit_last_error(node_output["last_error"])
+        return
+
+    if node_name == "review_analysis":
+        # Only emit in direct mode — plan mode already published via
+        # _publish_plan_event inside the node itself.
+        if node_output.get("execution_mode") != "plan":
+            plan = node_output.get("analysis_plan")
+            if plan:
+                yield AgentEvent(type="analysis_plan", data=plan)
         return
 
     if node_name == "validate_sql":

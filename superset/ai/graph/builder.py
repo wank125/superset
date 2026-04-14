@@ -256,6 +256,7 @@ def build_dashboard_graph(checkpointer: Any = None) -> Any:
     b.add_node("clarify_user", parent.clarify_user)
     b.add_node("read_schema", parent.read_schema)
     b.add_node("plan_dashboard", parent.plan_dashboard)
+    b.add_node("review_analysis", parent.review_analysis)
     b.add_node("single_chart_subgraph", subgraph_node)
     b.add_node(
         "after_subgraph", _after_subgraph_dashboard
@@ -288,6 +289,7 @@ def build_chart_graph(checkpointer: Any = None) -> Any:
     b.add_node("clarify_user", parent.clarify_user)
     b.add_node("read_schema", parent.read_schema)
     b.add_node("plan_dashboard", parent.plan_dashboard)
+    b.add_node("review_analysis", parent.review_analysis)
     b.add_node("single_chart_subgraph", subgraph_node)
     b.add_node(
         "after_subgraph", _after_subgraph_chart
