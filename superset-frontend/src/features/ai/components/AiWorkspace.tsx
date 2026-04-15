@@ -223,6 +223,7 @@ function AiChatSession({
         clarifyState={clarifyState}
         onClarifyAnswer={answerClarify}
         onClarifyDismiss={dismissClarify}
+        onSendMessage={sendMessage}
       />
       <AiWorkspaceInput
         onSend={handleSend}

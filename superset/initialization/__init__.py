@@ -273,8 +273,10 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         # Conditionally register AI Agent API
         if feature_flag_manager.is_feature_enabled("AI_AGENT"):
             from superset.ai.api import AiAgentRestApi
+            from superset.ai.alert.api import AiAlertRestApi
 
             appbuilder.add_api(AiAgentRestApi)
+            appbuilder.add_api(AiAlertRestApi)
         #
         # Setup regular views
         #

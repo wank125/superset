@@ -148,6 +148,10 @@ const CONDITIONS = [
     label: t('Not null'),
     value: 'not null',
   },
+  {
+    label: t('AI Judge'),
+    value: 'AI',
+  },
 ];
 
 const RETENTION_OPTIONS = [
@@ -450,6 +454,7 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
 
   // Dropdown options
   const [conditionNotNull, setConditionNotNull] = useState<boolean>(false);
+  const [conditionIsAI, setConditionIsAI] = useState<boolean>(false);
   const [sourceOptions, setSourceOptions] = useState<MetaObject[]>([]);
   const [dashboardOptions, setDashboardOptions] = useState<MetaObject[]>([]);
   const [chartOptions, setChartOptions] = useState<MetaObject[]>([]);
@@ -669,7 +674,11 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
       ...currentAlert,
       type: isReport ? 'Report' : 'Alert',
       force_screenshot: shouldEnableForceScreenshot || forceScreenshot,
-      validator_type: conditionNotNull ? 'not null' : 'operator',
+      validator_type: conditionNotNull
+        ? 'not null'
+        : conditionIsAI
+          ? 'AI'
+          : 'operator',
       validator_config_json: conditionNotNull
         ? {}
         : currentAlert?.validator_config_json,
@@ -1073,16 +1082,34 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
     updateAlertState('active', checked);
   };
 
-  const onConditionChange = (op: Operator) => {
+  const onConditionChange = (op: Operator | 'AI') => {
     setConditionNotNull(op === 'not null');
+    setConditionIsAI(op === 'AI');
 
+    if (op === 'AI') {
+      const config = {
+        prompt:
+          (currentAlert?.validator_config_json as Record<string, unknown>)
+            ?.prompt as string || '',
+      };
+      updateAlertState('validator_config_json', config);
+    } else {
+      const config = {
+        op,
+        threshold: currentAlert
+          ? currentAlert.validator_config_json?.threshold
+          : undefined,
+      };
+      updateAlertState('validator_config_json', config);
+    }
+  };
+
+  const onAiPromptChange = (
+    event: ChangeEvent<HTMLTextAreaElement>,
+  ) => {
     const config = {
-      op,
-      threshold: currentAlert
-        ? currentAlert.validator_config_json?.threshold
-        : undefined,
+      prompt: event.target.value,
     };
-
     updateAlertState('validator_config_json', config);
   };
 
@@ -1643,26 +1670,44 @@ const AlertReportModal: FunctionComponent<AlertReportModalProps> = ({
                         </StyledInputContainer>
                         <StyledInputContainer css={noMarginBottom}>
                           <div className="control-label">
-                            {t('Value')}{' '}
-                            {!conditionNotNull && (
+                            {conditionIsAI
+                              ? t('AI Condition')
+                              : t('Value')}{' '}
+                            {!conditionNotNull && !conditionIsAI && (
                               <span className="required">*</span>
                             )}
                           </div>
                           <div className="input-container">
-                            <InputNumber
-                              disabled={conditionNotNull}
-                              type="number"
-                              name="threshold"
-                              value={
-                                currentAlert?.validator_config_json
-                                  ?.threshold !== undefined && !conditionNotNull
-                                  ? currentAlert.validator_config_json.threshold
-                                  : ''
-                              }
-                              min={0}
-                              placeholder={t('Value')}
-                              onChange={onThresholdChange}
-                            />
+                            {conditionIsAI ? (
+                              <Input.TextArea
+                                name="ai_prompt"
+                                value={
+                                  (currentAlert?.validator_config_json as Record<string, unknown>)
+                                    ?.prompt as string || ''
+                                }
+                                placeholder={t(
+                                  'Describe the alert condition in natural language...',
+                                )}
+                                onChange={onAiPromptChange}
+                                rows={3}
+                              />
+                            ) : (
+                              <InputNumber
+                                disabled={conditionNotNull}
+                                type="number"
+                                name="threshold"
+                                value={
+                                  currentAlert?.validator_config_json
+                                    ?.threshold !== undefined &&
+                                  !conditionNotNull
+                                    ? currentAlert.validator_config_json.threshold
+                                    : ''
+                                }
+                                min={0}
+                                placeholder={t('Value')}
+                                onChange={onThresholdChange}
+                              />
+                            )}
                           </div>
                         </StyledInputContainer>
                       </div>

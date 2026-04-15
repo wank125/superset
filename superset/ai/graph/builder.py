@@ -161,6 +161,9 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:  # noqa: C901
 
         created_chart = result.get("created_chart")
         if created_chart:
+            # Phase 19b: attach suggested_width from child state
+            suggested_width = result.get("suggested_width", 4)
+            created_chart["suggested_width"] = suggested_width
             # Use operator.add annotation — append to created_charts list
             updates["created_charts"] = [created_chart]
             updates["child_events_published"] = stream_mgr is not None

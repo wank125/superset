@@ -154,6 +154,8 @@ class SingleChartState(TypedDict, total=False):
 
     # analyze_result output
     query_result_summary: ResultSummary | None
+    suggest_questions: list[str]  # Phase merge-1: follow-up question suggestions
+    statistics: dict[str, str]  # Period-over-period stats for KPI cards
 
     # select_chart output
     chart_plan: ChartPlan | None
@@ -163,6 +165,7 @@ class SingleChartState(TypedDict, total=False):
 
     # create_chart output
     created_chart: dict[str, Any] | None
+    suggested_width: int  # Phase 19b: dashboard grid width, passed to parent
 
     # Error tracking
     last_error: dict[str, Any] | None

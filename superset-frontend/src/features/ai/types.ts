@@ -30,6 +30,7 @@ export type AgentEventType =
   | 'dashboard_created'
   | 'error_fixed'
   | 'intent_routed'
+  | 'analysis_plan'
   | 'clarify'
   | 'done'
   | 'error';
@@ -45,6 +46,10 @@ export interface AiChatMessage {
   content: string;
   timestamp: number;
   steps?: AiStep[];
+  /** Inline chart data from data_analyzed event. */
+  queryResult?: SqlQueryResult;
+  /** Suggested follow-up questions. */
+  suggestQuestions?: string[];
 }
 
 /** A single step in the agent's execution progress. */
@@ -112,4 +117,49 @@ export interface ClarifyState {
   options: ClarifyOption[];
   answerPrefix: string;
   originalRequest: string;
+}
+
+/** SQL query result for inline chart rendering. */
+export interface SqlQueryResult {
+  columns: Array<{
+    name: string;
+    type: 'STRING' | 'INTEGER' | 'FLOAT' | 'DATETIME' | 'BOOLEAN' | 'TEXT';
+    is_dttm?: boolean;
+  }>;
+  rows: Record<string, unknown>[];
+  row_count: number;
+  insight?: string;
+  /** Period-over-period statistics, e.g. { "环比": "+5.2%", "同比": "+12.3%" } */
+  statistics?: Record<string, string>;
+}
+
+/** Phase 19a: structured analysis plan for user confirmation. */
+export interface AnalysisPlanData {
+  dataset: string;
+  dataset_reason: string;
+  metrics_dimensions: {
+    metrics: string[];
+    dimensions: string[];
+  };
+  time_range?: string;
+  charts: Array<{
+    index: number;
+    title: string;
+    intent: string;
+    viz: string;
+    target_table?: string;
+  }>;
+  assumptions_risks: string[];
+  confidence: number;
+}
+
+/** Phase 21: AI-generated alert configuration. */
+export interface AiAlertConfigResponse {
+  name: string;
+  sql: string;
+  validator_type: 'not null' | 'operator' | 'AI';
+  validator_config_json: Record<string, unknown>;
+  crontab: string;
+  description: string;
+  database_id: number;
 }

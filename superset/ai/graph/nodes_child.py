@@ -624,28 +624,106 @@ def analyze_result(
     }
 
     # Phase 11: generate one-line insight via LLM (best-effort, non-blocking)
+    statistics: dict[str, str] = {}
     if row_count > 0 and numeric_cols:
         try:
             from superset.ai.graph.llm_helpers import _get_llm_response
 
             sample_rows = rows[:3] if rows else []
-            insight_prompt = (
-                f"Based on these data characteristics, write ONE sentence "
-                f"(max 30 chars in Chinese) describing the key finding:\n"
-                f"  row_count: {row_count}\n"
-                f"  numeric_cols: {numeric_cols[:3]}\n"
-                f"  datetime_col: {datetime_col}\n"
-                f"  low_card_cols: {low_card_cols[:3]}\n"
-                f"  sample (first 3 rows): {sample_rows}\n\n"
-                f"Output ONLY the insight sentence, nothing else."
-            )
-            insight = _get_llm_response(insight_prompt).strip()
-            if insight:
-                summary["insight"] = insight[:200]
+            is_kpi = row_count == 1 and len(numeric_cols) == 1
+
+            if is_kpi:
+                # For KPI results, ask LLM for insight + comparison statistics
+                insight_prompt = (
+                    f"这是查询结果（单行KPI数据）:\n"
+                    f"  数据行: {sample_rows}\n"
+                    f"  指标列: {numeric_cols}\n"
+                    f"  维度列: {string_cols}\n"
+                    f"  时间列: {datetime_col}\n\n"
+                    f"请输出合法JSON，格式如下：\n"
+                    f'{{"insight": "一句话洞察(30字内)", '
+                    f'"statistics": {{"环比": "+X.X%", "同比": "+X.X%"}}}}\n\n'
+                    f"注意：\n"
+                    f"- insight 是一句话关键发现\n"
+                    f"- statistics 是推测性的环比/同比变化，如果没有时间列则设为空对象\n"
+                    f"- 如果数据不足以判断，statistics 置为空对象 {{}}\n"
+                    f"输出 ONLY JSON，无其他内容。"
+                )
+            else:
+                insight_prompt = (
+                    f"Based on these data characteristics, write ONE sentence "
+                    f"(max 30 chars in Chinese) describing the key finding:\n"
+                    f"  row_count: {row_count}\n"
+                    f"  numeric_cols: {numeric_cols[:3]}\n"
+                    f"  datetime_col: {datetime_col}\n"
+                    f"  low_card_cols: {low_card_cols[:3]}\n"
+                    f"  sample (first 3 rows): {sample_rows}\n\n"
+                    f"Output ONLY the insight sentence, nothing else."
+                )
+
+            raw_response = _get_llm_response(insight_prompt).strip()
+
+            if is_kpi:
+                try:
+                    from superset.utils import json as superset_json
+
+                    parsed = superset_json.loads(raw_response)
+                    if isinstance(parsed, dict):
+                        if parsed.get("insight"):
+                            summary["insight"] = str(parsed["insight"])[:200]
+                        if isinstance(parsed.get("statistics"), dict):
+                            statistics = parsed["statistics"]
+                except (ValueError, KeyError):
+                    # Fallback: treat whole response as insight text
+                    if raw_response:
+                        summary["insight"] = raw_response[:200]
+            else:
+                if raw_response:
+                    summary["insight"] = raw_response[:200]
         except Exception as exc:
             logger.warning("analyze_result insight generation failed: %s", exc)
 
-    return Command(update={"query_result_summary": summary}, goto="select_chart")
+    # Generate suggested follow-up questions for the frontend
+    suggest_questions = _generate_suggest_questions(
+        state, string_cols, numeric_cols, datetime_col,
+    )
+
+    return Command(
+        update={
+            "query_result_summary": summary,
+            # Re-emit query_result_raw so runner._emit_node_events can
+            # access it from this node's Command.update dict (runner reads
+            # node_output, not state, for event data).
+            "query_result_raw": state.get("query_result_raw", ""),
+            "suggest_questions": suggest_questions,
+            "statistics": statistics,
+        },
+        goto="select_chart",
+    )
+
+
+def _generate_suggest_questions(
+    state: SingleChartState,
+    string_cols: list[str],
+    numeric_cols: list[str],
+    datetime_col: str | None,
+) -> list[str]:
+    """Generate 2-3 follow-up question suggestions based on the query result."""
+    questions: list[str] = []
+
+    if string_cols:
+        questions.append(f"按 {string_cols[0]} 拆分分析")
+    if datetime_col:
+        questions.append("同比上周如何")
+    if numeric_cols:
+        questions.append("哪个维度贡献最大")
+
+    # Fallback when no specific dimensions detected
+    if not questions:
+        questions.append("查看趋势变化")
+        questions.append("导出详细数据")
+
+    return questions[:3]
 
 
 # ── Node C5: select_chart [LLM] ────────────────────────────────────
@@ -702,8 +780,12 @@ def select_chart(
     preferred_viz = intent.get("preferred_viz")
     if preferred_viz:
         chart_plan["viz_type"] = preferred_viz
+    # Phase 19b: determine suggested_width from chart type registry
+    viz_type = chart_plan.get("viz_type", "table")
+    desc = get_chart_registry().get(viz_type)
+    suggested_width = desc.default_width if desc else 4
     return Command(
-        update={"chart_plan": chart_plan},
+        update={"chart_plan": chart_plan, "suggested_width": suggested_width},
         goto="normalize_chart_params",
     )
 
@@ -837,6 +919,7 @@ def create_chart(
 
     slice_name = chart_plan.get("slice_name", "AI Chart")
     viz_type = chart_plan.get("viz_type", "table")
+    suggested_width = state.get("suggested_width", 4)
     datasource_id = state["schema_summary"]["datasource_id"]
 
     # Idempotency: skip if same chart was created within 10 minutes
@@ -851,6 +934,7 @@ def create_chart(
                     "explore_url": f"/explore/?slice_id={existing.id}",
                     "message": f"Reusing existing chart id={existing.id}",
                 },
+                "suggested_width": suggested_width,
             },
             goto="__end__",
         )
@@ -888,7 +972,10 @@ def create_chart(
         )
 
     return Command(
-        update={"created_chart": json.loads(result_str)},
+        update={
+            "created_chart": json.loads(result_str),
+            "suggested_width": suggested_width,
+        },
         goto="__end__",
     )
 

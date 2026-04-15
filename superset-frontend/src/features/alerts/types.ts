@@ -45,6 +45,8 @@ export enum NotificationMethodOption {
   Email = 'Email',
   Slack = 'Slack',
   SlackV2 = 'SlackV2',
+  DingTalk = 'DingTalk',
+  WeChatWork = 'WeChat Work',
 }
 
 export type SelectValue = {
@@ -134,6 +136,8 @@ export type AlertObject = {
   validator_config_json?: {
     op?: Operator;
     threshold?: number;
+    prompt?: string;
+    llm_provider?: string;
   };
   validator_type?: string;
   working_timeout?: number;
@@ -162,6 +166,8 @@ export enum RecipientIconName {
   Email = 'Email',
   Slack = 'Slack',
   SlackV2 = 'SlackV2',
+  DingTalk = 'DingTalk',
+  WeChatWork = 'WeChat Work',
 }
 export interface AlertsReportsConfig {
   ALERT_REPORTS_DEFAULT_WORKING_TIMEOUT: number;

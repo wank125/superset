@@ -39,6 +39,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=False,
         requires_time_column=True,
         max_groupby_dimensions=3,
+        default_width=6,
     ),
     "echarts_timeseries_bar": ChartTypeDescriptor(
         viz_type="echarts_timeseries_bar",
@@ -56,6 +57,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=False,
         requires_time_column=False,
         max_groupby_dimensions=2,
+        default_width=6,
     ),
     "echarts_timeseries_smooth": ChartTypeDescriptor(
         viz_type="echarts_timeseries_smooth",
@@ -74,6 +76,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=False,
         requires_time_column=True,
         max_groupby_dimensions=3,
+        default_width=6,
     ),
     "echarts_area": ChartTypeDescriptor(
         viz_type="echarts_area",
@@ -92,6 +95,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=False,
         requires_time_column=True,
         max_groupby_dimensions=3,
+        default_width=6,
     ),
     "echarts_timeseries_step": ChartTypeDescriptor(
         viz_type="echarts_timeseries_step",
@@ -110,6 +114,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=False,
         requires_time_column=True,
         max_groupby_dimensions=3,
+        default_width=6,
     ),
     "echarts_timeseries_scatter": ChartTypeDescriptor(
         viz_type="echarts_timeseries_scatter",
@@ -127,6 +132,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=False,
         requires_time_column=False,
         max_groupby_dimensions=3,
+        default_width=6,
     ),
     # ── 分类类 ──────────────────────────────────────────────
     "pie": ChartTypeDescriptor(
@@ -226,6 +232,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=True,
         requires_time_column=False,
         max_groupby_dimensions=0,
+        default_width=3,
     ),
     "big_number": ChartTypeDescriptor(
         viz_type="big_number",
@@ -243,6 +250,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=True,
         requires_time_column=True,
         max_groupby_dimensions=0,
+        default_width=3,
     ),
     "gauge_chart": ChartTypeDescriptor(
         viz_type="gauge_chart",
@@ -258,6 +266,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=True,
         requires_time_column=False,
         max_groupby_dimensions=0,
+        default_width=3,
     ),
     # ── 表格类 ──────────────────────────────────────────────
     "table": ChartTypeDescriptor(
@@ -276,6 +285,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=False,
         requires_time_column=False,
         max_groupby_dimensions=0,
+        default_width=12,
     ),
     "pivot_table_v2": ChartTypeDescriptor(
         viz_type="pivot_table_v2",
@@ -293,6 +303,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=False,
         requires_time_column=False,
         max_groupby_dimensions=0,
+        default_width=12,
     ),
     # ── 分布类 ──────────────────────────────────────────────
     "histogram_v2": ChartTypeDescriptor(

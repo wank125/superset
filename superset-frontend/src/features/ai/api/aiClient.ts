@@ -22,6 +22,7 @@ import type {
   AiChatRequest,
   AiChatResponse,
   AiEventsResponse,
+  AiAlertConfigResponse,
 } from '../types';
 
 export function sendChat(payload: AiChatRequest): Promise<AiChatResponse> {
@@ -39,4 +40,16 @@ export function fetchEvents(
   return SupersetClient.get({
     endpoint: `/api/v1/ai/events/?channel_id=${channelId}&last_id=${lastId}`,
   }).then(({ json }) => json as AiEventsResponse);
+}
+
+export function generateAlertConfig(payload: {
+  message: string;
+  database_id: number;
+  schema_name?: string;
+}): Promise<AiAlertConfigResponse> {
+  return SupersetClient.post({
+    endpoint: '/api/v1/ai/alert/generate/',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(({ json }) => json as AiAlertConfigResponse);
 }

@@ -49,3 +49,4 @@ class ChartTypeDescriptor:
     uses_metric_singular: bool  # True for pie, big_number_total, gauge
     requires_time_column: bool  # True for timeseries types
     max_groupby_dimensions: int  # suggested max, 0 = unlimited
+    default_width: int = 4  # Phase 19b: dashboard grid width (1-12)

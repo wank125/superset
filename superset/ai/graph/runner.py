@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from collections.abc import Iterator
@@ -53,6 +54,79 @@ _NODE_PROGRESS: dict[str, tuple[str, str | None]] = {
     "after_subgraph": (None, None),  # routing only, no visible output
     "clarify_user": ("等待用户选择...", None),
 }
+
+
+def _parse_text_table_for_event(
+    text: str,
+) -> dict[str, Any] | None:
+    """Parse execute_sql text output into structured columns + rows for frontend charts."""
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if len(lines) < 3:
+        return None
+
+    # Find separator line (dashes + pipes)
+    sep_idx = next(
+        (i for i, l in enumerate(lines) if set(l) <= {"-", "|", "+", " "}),
+        -1,
+    )
+    if sep_idx < 1:
+        return None
+
+    headers = [h.strip() for h in lines[sep_idx - 1].split("|") if h.strip()]
+    if not headers:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    for line in lines[sep_idx + 1 :]:
+        cells = [c.strip() for c in line.split("|") if c.strip()]
+        if not cells:
+            continue
+        row: dict[str, Any] = {}
+        for i, h in enumerate(headers):
+            val = cells[i] if i < len(cells) else ""
+            num = None
+            try:
+                num = int(val)
+            except ValueError:
+                try:
+                    num = float(val)
+                except ValueError:
+                    pass
+            row[h] = num if num is not None else val
+        rows.append(row)
+
+    if not rows:
+        return None
+
+    # Infer column types
+    columns: list[dict[str, str]] = []
+    for h in headers:
+        samples = [str(r.get(h, "")) for r in rows[:5]]
+        is_num = all(
+            s == "" or s.replace(".", "").replace("-", "").isdigit()
+            for s in samples
+        )
+        # DATETIME detection: use column name heuristic first,
+        # then conservative value pattern (must look like YYYY-MM or YYYY/MM)
+        is_dttm_by_name = any(
+            kw in h.lower()
+            for kw in ("date", "time", "dt", "day", "month", "year", "ds")
+        )
+        is_dttm_by_val = (
+            all(
+                re.match(r"\d{4}[-/]\d{2}", s)
+                for s in samples
+                if s
+            )
+            if samples else False
+        )
+        is_dttm = is_dttm_by_name or is_dttm_by_val
+        col_type = (
+            "DATETIME" if is_dttm else "FLOAT" if is_num else "STRING"
+        )
+        columns.append({"name": h, "type": col_type, "is_dttm": is_dttm})
+
+    return {"columns": columns, "rows": rows}
 
 
 def run_graph(  # noqa: C901
@@ -240,15 +314,28 @@ def _emit_node_events(  # noqa: C901
     if node_name == "analyze_result":
         summary = node_output.get("query_result_summary")
         if summary:
-            yield AgentEvent(
-                type="data_analyzed",
-                data={
-                    "row_count": summary.get("row_count"),
-                    "suitability": summary.get("suitability_flags"),
-                },
-            )
-            # Phase 11: emit insight event for frontend display
             insight = summary.get("insight")
+            event_data: dict[str, Any] = {
+                "row_count": summary.get("row_count"),
+                "suitability": summary.get("suitability_flags"),
+            }
+            # Include parsed columns and rows for inline chart rendering
+            query_result_raw = node_output.get("query_result_raw")
+            if query_result_raw:
+                parsed = _parse_text_table_for_event(query_result_raw)
+                if parsed:
+                    event_data["columns"] = parsed["columns"]
+                    event_data["rows"] = parsed["rows"]
+            if insight:
+                event_data["insight"] = insight
+            suggest = node_output.get("suggest_questions")
+            if suggest:
+                event_data["suggest_questions"] = suggest
+            stats = node_output.get("statistics")
+            if stats:
+                event_data["statistics"] = stats
+            yield AgentEvent(type="data_analyzed", data=event_data)
+            # Phase 11: emit insight event for frontend display
             if insight:
                 yield AgentEvent(
                     type="insight_generated",

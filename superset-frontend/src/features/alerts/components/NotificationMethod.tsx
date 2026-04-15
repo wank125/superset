@@ -339,7 +339,9 @@ export const NotificationMethod: FunctionComponent<NotificationMethodProps> = ({
             ((!isFeatureEnabled(FeatureFlag.AlertReportSlackV2) ||
               useSlackV1) &&
               method === NotificationMethodOption.Slack) ||
-            method === NotificationMethodOption.Email,
+            method === NotificationMethodOption.Email ||
+            method === NotificationMethodOption.DingTalk ||
+            method === NotificationMethodOption.WeChatWork,
         )
         .map(method => ({
           label:
@@ -536,6 +538,21 @@ export const NotificationMethod: FunctionComponent<NotificationMethodProps> = ({
                       <div className="helper">
                         {t('Recipients are separated by "," or ";"')}
                       </div>
+                    </div>
+                  </>
+                ) : [
+                    NotificationMethodOption.DingTalk,
+                    NotificationMethodOption.WeChatWork,
+                  ].includes(method) ? (
+                  <>
+                    <div className="input-container">
+                      <Input.TextArea
+                        name="Webhook URL"
+                        data-test="recipients"
+                        value={recipientValue}
+                        onChange={onRecipientsChange}
+                        placeholder={t('Enter webhook URL')}
+                      />
                     </div>
                   </>
                 ) : (

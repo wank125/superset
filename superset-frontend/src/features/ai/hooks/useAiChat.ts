@@ -25,6 +25,8 @@ import type {
   ChartResult,
   DashboardResult,
   ClarifyState,
+  AnalysisPlanData,
+  SqlQueryResult,
 } from '../types';
 import { sendChat, fetchEvents } from '../api/aiClient';
 
@@ -72,6 +74,9 @@ export function useAiChat(
   const [sqlPreview, setSqlPreview] = useState<string | null>(null);
   const [routedAgent, setRoutedAgent] = useState<string | null>(null);
   const [clarifyState, setClarifyState] = useState<ClarifyState | null>(null);
+  const [analysisPlan, setAnalysisPlan] = useState<AnalysisPlanData | null>(
+    null,
+  );
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Ref to track accumulated streaming text without relying on setState updater
   const streamingTextRef = useRef('');
@@ -164,6 +169,7 @@ export function useAiChat(
     latestSqlResultRef.current = null;
     setRoutedAgent(null);
     setClarifyState(null);
+    setAnalysisPlan(null);
     stepLabelsRef.current.clear();
   }, []);
 
@@ -278,6 +284,33 @@ export function useAiChat(
                   'done',
                   'data_analyzed',
                 );
+                // Store query result for inline chart rendering
+                if (event.data.columns || event.data.rows) {
+                  const qr: SqlQueryResult = {
+                    columns:
+                      (event.data.columns as SqlQueryResult['columns']) || [],
+                    rows:
+                      (event.data.rows as SqlQueryResult['rows']) || [],
+                    row_count: rowCount,
+                    insight: (event.data.insight as string) || undefined,
+                    statistics:
+                      (event.data.statistics as Record<string, string>) ||
+                      undefined,
+                  };
+                  setMessages(prev =>
+                    prev.map((msg, i) =>
+                      i === prev.length - 1 && msg.role === 'assistant'
+                        ? {
+                            ...msg,
+                            queryResult: qr,
+                            suggestQuestions:
+                              (event.data.suggest_questions as string[]) ||
+                              undefined,
+                          }
+                        : msg,
+                    ),
+                  );
+                }
                 break;
               }
               case 'chart_created': {
@@ -322,6 +355,39 @@ export function useAiChat(
                 const insight = (event.data.insight as string) || '';
                 if (insight) {
                   addStep(`💡 ${insight}`, 'done', 'insight_generated');
+                }
+                break;
+              }
+              case 'analysis_plan': {
+                const plan = event.data as unknown as AnalysisPlanData;
+                if (plan && plan.dataset) {
+                  setAnalysisPlan(plan);
+                  const chartList = (plan.charts || [])
+                    .map(
+                      (c: AnalysisPlanData['charts'][0]) =>
+                        `  ${c.index + 1}. ${c.title} — ${c.intent} — ${c.viz}`,
+                    )
+                    .join('\n');
+                  const assumptions = (plan.assumptions_risks || [])
+                    .map((a: string) => `  ⚠ ${a}`)
+                    .join('\n');
+                  const planText = [
+                    `📊 分析计划（置信度 ${Math.round((plan.confidence ?? 0) * 100)}%）`,
+                    '',
+                    `数据集: ${plan.dataset}${plan.dataset_reason ? `（${plan.dataset_reason}）` : ''}`,
+                    `指标: ${(plan.metrics_dimensions?.metrics || []).join(', ')}`,
+                    `维度: ${(plan.metrics_dimensions?.dimensions || []).join(', ')}`,
+                    plan.time_range ? `时间: ${plan.time_range}` : '',
+                    '',
+                    `图表（${(plan.charts || []).length} 张）：`,
+                    chartList,
+                    assumptions ? `\n${assumptions}` : '',
+                    '',
+                    '💡 回复"确认执行"继续，或告诉我需要调整的地方',
+                  ]
+                    .filter(Boolean)
+                    .join('\n');
+                  newChunkText += planText;
                 }
                 break;
               }
@@ -498,5 +564,6 @@ export function useAiChat(
     clarifyState,
     answerClarify,
     dismissClarify,
+    analysisPlan,
   };
 }

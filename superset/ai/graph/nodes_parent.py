@@ -1437,11 +1437,14 @@ def create_dashboard(
             table_name = target_tables[0]
     title = (table_name or "AI") + " 仪表板"
     chart_ids = [c["chart_id"] for c in charts]
+    # Phase 19b: collect suggested_width from each chart's plan
+    chart_widths = {c["chart_id"]: c.get("suggested_width", 4) for c in charts}
 
     tool = CreateDashboardTool()
     result_str = tool.run({
         "dashboard_title": title,
         "chart_ids": chart_ids,
+        "chart_widths": chart_widths,
         "description": f"由 AI Agent 生成 | request_id={request_id}",
     })
 

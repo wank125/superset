@@ -47,6 +47,8 @@ from superset.utils.retries import retry_call
 
 logger = logging.getLogger(__name__)
 
+_AI_VALIDATOR_TIMEOUT = 10  # seconds for LLM evaluation
+
 
 ALERT_SQL_LIMIT = 2
 # All sql statements have an applied LIMIT,
@@ -80,6 +82,9 @@ class AlertCommand(BaseCommand):
         if self._is_validator_not_null:
             self._report_schedule.last_value_row_json = str(self._result)
             return self._result not in (0, None, np.nan)
+        if self._is_validator_ai:
+            # AI validator: result stored as row JSON, judgment from LLM
+            return self._run_ai_validator()
         self._report_schedule.last_value = self._result
         try:
             operator = json.loads(self._report_schedule.validator_config_json)["op"]
@@ -127,6 +132,61 @@ class AlertCommand(BaseCommand):
         except (AssertionError, TypeError, ValueError) as ex:
             raise AlertQueryInvalidTypeError() from ex
 
+    def _validate_ai(self, rows: np.recarray[Any, Any]) -> None:
+        """Store raw query result for AI evaluation.
+
+        AI alerts allow wider results (more than 2 columns) because the LLM
+        can interpret multi-column data. We still limit to 1 row for safety.
+        """
+        if len(rows) > 1:
+            raise AlertQueryMultipleRowsError(
+                message=_(
+                    "Alert query returned more than one row. %(num_rows)s rows returned",
+                    num_rows=len(rows),
+                )
+            )
+        # Store the full result as JSON for AI evaluation
+        try:
+            df = pd.DataFrame(rows)
+            self._result = df.to_dict(orient="records")
+        except Exception:
+            self._result = str(rows[0])
+
+    def _run_ai_validator(self) -> bool:
+        """Evaluate alert condition using LLM. Returns True if alert should fire."""
+        # Store result for later inspection
+        self._report_schedule.last_value_row_json = json.dumps(
+            self._result, default=str
+        )
+
+        try:
+            config = json.loads(self._report_schedule.validator_config_json)
+            prompt_text = config.get("prompt", "")
+        except (json.JSONDecodeError, AttributeError) as ex:
+            raise AlertValidatorConfigError() from ex
+
+        if not prompt_text:
+            raise AlertValidatorConfigError("AI validator requires a 'prompt' in config")
+
+        try:
+            from superset.ai.alert.prompts import ALERT_EVALUATOR_PROMPT
+            from superset.ai.graph.llm_helpers import _get_llm_response
+
+            result_text = json.dumps(self._result, default=str, ensure_ascii=False)
+            evaluator_prompt = ALERT_EVALUATOR_PROMPT.format(
+                result_text=result_text,
+                prompt=prompt_text,
+            )
+
+            response = _get_llm_response(evaluator_prompt)
+            answer = response.strip().lower()
+
+            return answer.startswith("true")
+        except Exception as exc:
+            logger.warning("AI validator evaluation failed, treating as not triggered: %s", exc)
+            # Graceful degradation: if LLM fails, don't trigger alert
+            return False
+
     @property
     def _is_validator_not_null(self) -> bool:
         return (
@@ -137,6 +197,12 @@ class AlertCommand(BaseCommand):
     def _is_validator_operator(self) -> bool:
         return (
             self._report_schedule.validator_type == ReportScheduleValidatorType.OPERATOR
+        )
+
+    @property
+    def _is_validator_ai(self) -> bool:
+        return (
+            self._report_schedule.validator_type == ReportScheduleValidatorType.AI
         )
 
     def _get_alert_metadata_from_object(self) -> dict[str, Any]:
@@ -211,11 +277,14 @@ class AlertCommand(BaseCommand):
         if df.empty and self._is_validator_not_null:
             self._result = None
             return
-        if df.empty and self._is_validator_operator:
+        if df.empty and (self._is_validator_operator or self._is_validator_ai):
             self._result = 0.0
             return
         rows = df.to_records()
         if self._is_validator_not_null:
             self._validate_not_null(rows)
+            return
+        if self._is_validator_ai:
+            self._validate_ai(rows)
             return
         self._validate_operator(rows)

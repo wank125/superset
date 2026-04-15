@@ -52,6 +52,18 @@ export default function RecipientIcon({ type }: { type: string }) {
       );
       recipientIconConfig.label = NotificationMethodOption.Slack;
       break;
+    case NotificationMethodOption.DingTalk:
+      recipientIconConfig.icon = (
+        <Icons.BellOutlined css={notificationStyledIcon} iconSize="l" />
+      );
+      recipientIconConfig.label = NotificationMethodOption.DingTalk;
+      break;
+    case NotificationMethodOption.WeChatWork:
+      recipientIconConfig.icon = (
+        <Icons.MessageOutlined css={notificationStyledIcon} iconSize="l" />
+      );
+      recipientIconConfig.label = NotificationMethodOption.WeChatWork;
+      break;
     default:
       recipientIconConfig.icon = null;
       recipientIconConfig.label = '';

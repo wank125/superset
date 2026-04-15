@@ -57,12 +57,15 @@ class ReportScheduleValidatorType(StrEnum):
 
     NOT_NULL = "not null"
     OPERATOR = "operator"
+    AI = "AI"
 
 
 class ReportRecipientType(StrEnum):
     EMAIL = "Email"
     SLACK = "Slack"
     SLACKV2 = "SlackV2"
+    DINGTALK = "DingTalk"
+    WECHAT_WORK = "WeChat Work"
 
 
 class ReportState(StrEnum):

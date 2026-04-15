@@ -20,9 +20,11 @@
 import { styled } from '@superset-ui/core';
 import type { AiChatMessage } from '../types';
 import { AiMarkdown } from './AiMarkdown';
+import { AiInlineChart } from './AiInlineChart';
 
 interface AiMessageBubbleProps {
   message: AiChatMessage;
+  onSuggestQuestion?: (question: string) => void;
 }
 
 const Bubble = styled.div<{ isUser: boolean }>`
@@ -57,11 +59,21 @@ const Bubble = styled.div<{ isUser: boolean }>`
     `}
 `;
 
-export function AiMessageBubble({ message }: AiMessageBubbleProps) {
+export function AiMessageBubble({ message, onSuggestQuestion }: AiMessageBubbleProps) {
   const isUser = message.role === 'user';
   return (
     <Bubble isUser={isUser}>
       <AiMarkdown content={message.content} />
+      {message.role === 'assistant' && message.queryResult && (
+        <div style={{ padding: '0 12px 8px' }}>
+          <AiInlineChart
+            result={message.queryResult}
+            insight={message.queryResult.insight}
+            suggestQuestions={message.suggestQuestions}
+            onSuggestQuestion={onSuggestQuestion}
+          />
+        </div>
+      )}
     </Bubble>
   );
 }

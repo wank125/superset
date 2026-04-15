@@ -110,6 +110,78 @@ def append_charts(position: dict[str, Any], charts: set[Slice]) -> dict[str, Any
     return position
 
 
+def append_charts_v2(
+    position: dict[str, Any],
+    charts_with_widths: list[tuple[Slice, int]],
+) -> dict[str, Any]:
+    """Flow-layout bin-packing with variable widths and tail-fill.
+
+    Each chart gets its own width (1-12). Charts are packed into rows of
+    total width <= 12. When a row has remaining space and no more charts
+    fit, the last chart in that row is expanded to fill the remainder.
+    """
+    has_grid = "ROOT_ID" in position and "GRID_ID" in position["ROOT_ID"]["children"]
+
+    rows: list[list[tuple[str, int]]] = []  # [(chart_hash, width), ...]
+    current_row: list[tuple[str, int]] = []
+    current_used = 0
+
+    for slice_obj, width in charts_with_widths:
+        width = max(1, min(12, width))
+        chart_hash = f"CHART-{suffix()}"
+        position[chart_hash] = {
+            "children": [],
+            "id": chart_hash,
+            "meta": {
+                "chartId": slice_obj.id,
+                "height": DEFAULT_CHART_HEIGHT,
+                "sliceName": slice_obj.slice_name,
+                "uuid": str(slice_obj.uuid),
+                "width": width,
+            },
+            "type": "CHART",
+        }
+
+        if current_used + width > 12:
+            rows.append(current_row)
+            current_row = [(chart_hash, width)]
+            current_used = width
+        else:
+            current_row.append((chart_hash, width))
+            current_used += width
+
+    if current_row:
+        rows.append(current_row)
+
+    # Single-pass tail-fill: expand the last chart in every row that
+    # doesn't fill all 12 columns. Clamp to 12 to prevent overflow
+    # when a single wide chart occupies most of the row.
+    for row in rows:
+        total = sum(w for _, w in row)
+        if total < 12:
+            last_hash, last_w = row[-1]
+            fill_w = min(12, last_w + (12 - total))
+            position[last_hash]["meta"]["width"] = fill_w
+            row[-1] = (last_hash, fill_w)
+
+    if has_grid:
+        for row_items in rows:
+            row_hash = f"ROW-N-{suffix()}"
+            position["GRID_ID"]["children"].append(row_hash)
+            chunk_hashes = [h for h, _ in row_items]
+            position[row_hash] = {
+                "children": chunk_hashes,
+                "id": row_hash,
+                "meta": {"0": "ROOT_ID", "background": "BACKGROUND_TRANSPARENT"},
+                "type": "ROW",
+                "parents": ["ROOT_ID", "GRID_ID"],
+            }
+            for chart_hash, _ in row_items:
+                position[chart_hash]["parents"] = ["ROOT_ID", "GRID_ID", row_hash]
+
+    return position
+
+
 class ExportDashboardsCommand(ExportModelsCommand):
     dao = DashboardDAO
     not_found = DashboardNotFoundError

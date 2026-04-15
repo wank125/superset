@@ -48,6 +48,7 @@ interface AiWorkspaceContentProps {
   onDashboardClick?: (dashboardId: number, url: string) => void;
   onClarifyAnswer?: (value: string) => void;
   onClarifyDismiss?: () => void;
+  onSendMessage?: (message: string) => void;
 }
 
 const ContentArea = styled.div`
@@ -128,6 +129,7 @@ export function AiWorkspaceContent({
   onDashboardClick,
   onClarifyAnswer,
   onClarifyDismiss,
+  onSendMessage,
 }: AiWorkspaceContentProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -154,7 +156,14 @@ export function AiWorkspaceContent({
         )}
         {messages.map((msg, idx) => (
           <div key={msg.timestamp}>
-            <AiMessageBubble message={msg} />
+            <AiMessageBubble
+              message={msg}
+              onSuggestQuestion={
+                msg.role === 'assistant' && onSendMessage
+                  ? onSendMessage
+                  : undefined
+              }
+            />
             {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
               <AiStepProgress steps={msg.steps} />
             )}

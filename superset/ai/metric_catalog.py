@@ -62,12 +62,60 @@ def load_metric_catalog() -> dict[str, MetricDef]:
         return {}
 
 
+def _is_supersonic_enabled() -> bool:
+    """Check if SuperSonic semantic layer is enabled via Flask config."""
+    try:
+        from flask import current_app
+
+        return bool(current_app.config.get("SUPERSONIC_ENABLED", False))
+    except Exception:
+        return False
+
+
+def _get_supersonic_client() -> Any:
+    """Create a SuperSonic client from Flask config."""
+    from flask import current_app
+
+    from superset.ai.semantic.supersonic_client import SuperSonicClient
+
+    return SuperSonicClient(
+        base_url=current_app.config.get("SUPERSONIC_BASE_URL", "http://localhost:9080"),
+        timeout=current_app.config.get("SUPERSONIC_TIMEOUT", 5),
+        auth_enabled=current_app.config.get("SUPERSONIC_AUTH_ENABLED", False),
+        app_key=current_app.config.get("SUPERSONIC_APP_KEY", ""),
+        app_secret=current_app.config.get("SUPERSONIC_APP_SECRET", ""),
+    )
+
+
 def find_metrics_for_table(table_name: str) -> dict[str, MetricDef]:
     """Return metrics applicable to the given table name.
+
+    Uses SuperSonic-first, YAML-fallback strategy:
+    1. If SUPERSONIC_ENABLED, try the SuperSonic semantic layer API
+    2. On any failure, fall back to the YAML metric catalog
 
     Supports ``*`` suffix wildcards in the ``tables`` list:
     ``order_*`` matches ``order_detail``, ``order_items``, etc.
     """
+    # SuperSonic-first path
+    if _is_supersonic_enabled():
+        try:
+            from flask import current_app
+
+            domain_id = current_app.config.get("SUPERSONIC_DOMAIN_ID")
+            client = _get_supersonic_client()
+            result = client.find_metrics_for_table(table_name, domain_id=domain_id)
+            if result:
+                return result
+            logger.debug("SuperSonic returned no metrics for '%s', falling back", table_name)
+        except Exception:
+            logger.debug(
+                "SuperSonic lookup failed for '%s', falling back to YAML",
+                table_name,
+                exc_info=True,
+            )
+
+    # YAML fallback
     catalog = load_metric_catalog()
     result: dict[str, MetricDef] = {}
     for name, defn in catalog.items():

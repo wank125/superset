@@ -118,6 +118,14 @@ class ValidatorConfigJSONSchema(Schema):
         validate=validate.OneOf(choices=["<", "<=", ">", ">=", "==", "!="]),
     )
     threshold = fields.Float()
+    # AI validator fields
+    prompt = fields.String(
+        metadata={"description": "Natural language condition for AI validator"},
+    )
+    llm_provider = fields.String(
+        metadata={"description": "LLM provider name (optional, uses default)"},
+        load_default=None,
+    )
 
 
 class ReportRecipientConfigJSONSchema(Schema):

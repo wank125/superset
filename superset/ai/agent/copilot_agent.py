@@ -32,6 +32,7 @@ from superset.ai.tools.query_history import QueryHistoryTool
 from superset.ai.tools.report_status import ReportStatusTool
 from superset.ai.tools.saved_query import SavedQueryTool
 from superset.ai.tools.whoami import WhoAmITool
+from superset.ai.tools.embed_dashboard import EmbedDashboardTool
 
 
 class CopilotAgent(BaseAgent):
@@ -60,6 +61,7 @@ class CopilotAgent(BaseAgent):
             QueryHistoryTool(),
             SavedQueryTool(),
             ReportStatusTool(),
+            EmbedDashboardTool(),
         ]
 
         if database_id is not None:

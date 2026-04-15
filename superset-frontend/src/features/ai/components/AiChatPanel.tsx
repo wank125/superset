@@ -26,6 +26,9 @@ import { AiStreamingText } from './AiStreamingText';
 import { AiSqlPreview } from './AiSqlPreview';
 import { AiStepProgress } from './AiStepProgress';
 import { AiClarifyOptions } from './AiClarifyOptions';
+import { AlertConfigCard } from './AlertConfigCard';
+import { generateAlertConfig } from '../api/aiClient';
+import type { AiAlertConfigResponse } from '../types';
 
 interface AiChatPanelProps {
   databaseId: number;
@@ -141,6 +144,7 @@ const AGENT_MODES = [
   { label: 'SQL', value: 'nl2sql' },
   { label: 'Chart', value: 'chart' },
   { label: 'Dashboard', value: 'dashboard' },
+  { label: 'Alert', value: 'alert' },
 ];
 
 export function AiChatPanel({
@@ -152,6 +156,10 @@ export function AiChatPanel({
 }: AiChatPanelProps) {
   const [agentType, setAgentType] = useState('nl2sql');
   const [inputValue, setInputValue] = useState('');
+  const [alertConfig, setAlertConfig] =
+    useState<AiAlertConfigResponse | null>(null);
+  const [alertLoading, setAlertLoading] = useState(false);
+  const [alertError, setAlertError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const {
     messages,
@@ -182,13 +190,39 @@ export function AiChatPanel({
     if (newMode !== agentType) {
       setAgentType(newMode);
       clearMessages();
+      setAlertConfig(null);
     }
   };
 
   const handleSend = () => {
-    if (!inputValue.trim() || loading) return;
-    sendMessage(inputValue.trim());
+    if (!inputValue.trim() || loading || alertLoading) return;
+
+    if (agentType === 'alert') {
+      handleAlertGenerate(inputValue.trim());
+    } else {
+      sendMessage(inputValue.trim());
+    }
     setInputValue('');
+  };
+
+  const handleAlertGenerate = async (message: string) => {
+    if (!databaseId) return;
+    setAlertLoading(true);
+    setAlertConfig(null);
+    setAlertError(null);
+    try {
+      const config = await generateAlertConfig({
+        message,
+        database_id: databaseId,
+      });
+      setAlertConfig(config);
+    } catch (ex) {
+      setAlertConfig(null);
+      const errMsg = ex instanceof Error ? ex.message : String(ex);
+      setAlertError(errMsg);
+    } finally {
+      setAlertLoading(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -203,7 +237,9 @@ export function AiChatPanel({
       ? t('Describe the dashboard you want to create...')
       : agentType === 'chart'
         ? t('Describe the chart you want to create...')
-        : t('Ask a question about your data...');
+        : agentType === 'alert'
+          ? t('Describe the alert you want to create, e.g. "monitor GMV drop >10%"...')
+          : t('Ask a question about your data...');
 
   // Latest results from the most recent agent run
   const latestChart =
@@ -228,7 +264,12 @@ export function AiChatPanel({
       <MessagesContainer>
         {messages.map((msg, idx) => (
           <div key={idx}>
-            <AiMessageBubble message={msg} />
+            <AiMessageBubble
+              message={msg}
+              onSuggestQuestion={
+                msg.role === 'assistant' ? sendMessage : undefined
+              }
+            />
             {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
               <AiStepProgress steps={msg.steps} />
             )}
@@ -317,6 +358,20 @@ export function AiChatPanel({
         {loading && !streamingText && steps.length === 0 && (
           <AiStreamingText text={t('Thinking...')} />
         )}
+        {alertLoading && (
+          <AiStreamingText text={t('Generating alert rule...')} />
+        )}
+        {alertError && !alertLoading && (
+          <div style={{ color: '#ff4d4f', padding: '8px 12px', fontSize: 13 }}>
+            {t('Alert generation failed')}: {alertError}
+          </div>
+        )}
+        {alertConfig && !alertLoading && (
+          <AlertConfigCard
+            config={alertConfig}
+            databaseId={databaseId}
+          />
+        )}
         {clarifyState && (
           <AiClarifyOptions
             clarifyState={clarifyState}
@@ -336,7 +391,7 @@ export function AiChatPanel({
         />
         <SendButton
           onClick={handleSend}
-          disabled={loading || !inputValue.trim()}
+          disabled={loading || alertLoading || !inputValue.trim()}
         >
           {t('Send')}
         </SendButton>

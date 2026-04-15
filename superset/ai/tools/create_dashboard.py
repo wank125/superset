@@ -28,7 +28,7 @@ from superset import db
 from superset.ai.tools.base import BaseTool
 from superset.commands.dashboard.create import CreateDashboardCommand
 from superset.commands.dashboard.export import (
-    append_charts,
+    append_charts_v2,
     get_default_position,
 )
 from superset.connectors.sqla.models import SqlaTable
@@ -68,6 +68,11 @@ class CreateDashboardTool(BaseTool):
                 "items": {"type": "integer"},
                 "description": "List of chart IDs to include in the dashboard",
             },
+            "chart_widths": {
+                "type": "object",
+                "description": "Map of chart_id to grid width (1-12). Omit to use default width.",
+                "additionalProperties": {"type": "integer"},
+            },
             "slug": {
                 "type": "string",
                 "description": "Optional URL slug (auto-generated if omitted)",
@@ -82,6 +87,7 @@ class CreateDashboardTool(BaseTool):
     def run(self, arguments: dict[str, Any]) -> str:  # noqa: C901
         title = arguments.get("dashboard_title", "").strip()
         chart_ids = arguments.get("chart_ids", [])
+        chart_widths = arguments.get("chart_widths") or {}
         slug = arguments.get("slug", "")
         description = arguments.get("description", "")
 
@@ -163,9 +169,13 @@ class CreateDashboardTool(BaseTool):
             ).hexdigest()[:8]
             slug = f"{base_slug}-{slug_hash}"
 
-        # Build position_json using existing helpers
+        # Build position_json using dynamic layout engine
         position = get_default_position(title)
-        append_charts(position, set(slices))
+        charts_with_widths = [
+            (sl, chart_widths.get(sl.id, chart_widths.get(str(sl.id), 4)))
+            for sl in slices
+        ]
+        append_charts_v2(position, charts_with_widths)
 
         # Create the dashboard
         dashboard_data: dict[str, Any] = {

@@ -682,6 +682,15 @@ AI_AGENT_MAX_CONTEXT_ROUNDS = 20
 AI_AGENT_MAX_TOKENS_PER_SESSION = 100000
 AI_AGENT_STREAM_CHANNEL_PREFIX = "ai-agent-"
 
+# SuperSonic Semantic Layer (Headless BI integration)
+SUPERSONIC_ENABLED = False
+SUPERSONIC_BASE_URL = "http://localhost:9080"
+SUPERSONIC_TIMEOUT = 5
+SUPERSONIC_DOMAIN_ID: int | None = None
+SUPERSONIC_AUTH_ENABLED = False
+SUPERSONIC_APP_KEY = "supersonic"
+SUPERSONIC_APP_SECRET = ""
+
 
 # Feature flags may also be set via 'SUPERSET_FEATURE_' prefixed environment vars.
 DEFAULT_FEATURE_FLAGS.update(
