@@ -244,6 +244,11 @@ COPY requirements/*.txt requirements/
 # Install Python dependencies using docker/pip-install.sh
 RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
     /app/docker/pip-install.sh --requires-build-essential -r requirements/development.txt
+# Install AI dependencies (langchain, langgraph, etc.)
+RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
+    if [ -f requirements/ai.txt ]; then \
+        /app/docker/pip-install.sh -r requirements/ai.txt; \
+    fi
 # Install the superset package
 RUN --mount=type=cache,target=${SUPERSET_HOME}/.cache/uv \
     uv pip install -e .

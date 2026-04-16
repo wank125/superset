@@ -28,11 +28,12 @@ from superset.ai.agent.debug_agent import DebugAgent
 from superset.ai.agent.nl2sql_agent import NL2SQLAgent
 
 _AGENT_PROMPT_BUILDERS: dict[str, type] = {
+    "data_assistant": NL2SQLAgent,
     "nl2sql": NL2SQLAgent,
+    "copilot": NL2SQLAgent,
     "chart": ChartAgent,
     "debug": DebugAgent,
     "dashboard": DashboardAgent,
-    "copilot": CopilotAgent,
 }
 
 _NL2SQL_EXECUTION_RULE = """
@@ -72,7 +73,7 @@ def prompt_adapter(
     agent._schema_name = schema_name
 
     system_text = agent.get_system_prompt()
-    if agent_type == "nl2sql":
+    if agent_type in ("nl2sql", "data_assistant", "copilot", "debug"):
         system_text += _NL2SQL_EXECUTION_RULE
 
     # Use a static SystemMessage (no variable interpolation) + a

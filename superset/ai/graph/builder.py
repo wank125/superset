@@ -47,6 +47,7 @@ def _build_single_chart_subgraph() -> StateGraph:
         ),
     )
     b.add_node("analyze_result", child.analyze_result)
+    b.add_node("generate_questions", child.generate_questions)
     b.add_node("select_chart", child.select_chart)
     b.add_node(
         "normalize_chart_params", child.normalize_chart_params
@@ -247,7 +248,10 @@ def build_dashboard_graph(checkpointer: Any = None) -> Any:
     subgraph_node = _make_subgraph_wrapper(subgraph)
 
     b = StateGraph(DashboardState)
+    # Database auto-selection
+    b.add_node("select_database", parent.select_database)
     # Phase 14: chart modification nodes
+    b.add_node("check_schema", parent.check_schema)
     b.add_node("classify_intent", parent.classify_intent)
     b.add_node("load_existing_chart", parent.load_existing_chart)
     b.add_node("apply_chart_modification", parent.apply_chart_modification)
@@ -266,7 +270,7 @@ def build_dashboard_graph(checkpointer: Any = None) -> Any:
     )
     b.add_node("create_dashboard", parent.create_dashboard)
 
-    b.add_edge(START, "classify_intent")
+    b.add_edge(START, "select_database")
     # All other edges are determined by Command(goto=...) inside nodes
 
     return b.compile(checkpointer=checkpointer)
@@ -280,7 +284,10 @@ def build_chart_graph(checkpointer: Any = None) -> Any:
     subgraph_node = _make_subgraph_wrapper(subgraph)
 
     b = StateGraph(DashboardState)
+    # Database auto-selection
+    b.add_node("select_database", parent.select_database)
     # Phase 14: chart modification nodes
+    b.add_node("check_schema", parent.check_schema)
     b.add_node("classify_intent", parent.classify_intent)
     b.add_node("load_existing_chart", parent.load_existing_chart)
     b.add_node("apply_chart_modification", parent.apply_chart_modification)
@@ -298,5 +305,5 @@ def build_chart_graph(checkpointer: Any = None) -> Any:
         "after_subgraph", _after_subgraph_chart
     )
 
-    b.add_edge(START, "classify_intent")
+    b.add_edge(START, "select_database")
     return b.compile(checkpointer=checkpointer)

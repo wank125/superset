@@ -28,18 +28,15 @@ _CLASSIFIER_PROMPT = """\
 Classify the user request to ONE agent type. Return ONLY valid JSON.
 
 Agent types:
-- "nl2sql":    User wants to query data from a database using SQL.
-               Examples: "查销售额", "count users", "统计各地区数据"
-- "chart":     User wants to create or visualize a chart.
-               Examples: "画折线图", "做一个柱状图", "visualize trend"
-- "dashboard": User wants to create a dashboard with multiple charts.
+- "data_assistant": User wants to query data, explore schemas, search datasets,
+               list charts/dashboards, check permissions, or any general data question.
+               This is the default for most data-related requests.
+               Examples: "查销售额", "有多少个数据集", "我有哪些图表", "count users",
+               "birth_names 有多少行", "我有什么权限"
+- "chart":     User explicitly wants to CREATE a chart visualization.
+               Examples: "画折线图", "做一个柱状图", "visualize trend as chart"
+- "dashboard": User explicitly wants to CREATE a dashboard with multiple charts.
                Examples: "做一个仪表板", "create overview dashboard"
-- "copilot":   User wants info about the Superset platform itself
-               (not about the data IN the database, but about Superset's
-               assets, permissions, report status, query history, etc.)
-               Examples: "有哪些失败的报告", "我有什么权限", "查一下图表列表"
-- "debug":     User wants to fix a broken SQL query.
-               Examples: "这个 SQL 报错了", "fix: column not found"
 
 Context:
   session_last_agent: {last_agent}
@@ -49,7 +46,7 @@ User message: {message}
 
 Response format:
 {{
-  "agent": "nl2sql|chart|dashboard|copilot|debug",
+  "agent": "data_assistant|chart|dashboard",
   "confidence": 0.0-1.0,
   "reason": "one short sentence"
 }}
@@ -76,9 +73,9 @@ def llm_classify(
         agent = result.get("agent", "nl2sql")
         confidence = float(result.get("confidence", 0.5))
         reason = result.get("reason", "")
-        if agent not in ("nl2sql", "chart", "dashboard", "copilot", "debug"):
-            agent = "nl2sql"
+        if agent not in ("data_assistant", "nl2sql", "copilot", "chart", "dashboard"):
+            agent = "data_assistant"
         return agent, confidence, reason
     except Exception as exc:
         logger.warning("LLM intent classifier failed: %s", exc)
-        return "nl2sql", 0.5, f"fallback due to error: {exc}"
+        return "data_assistant", 0.5, f"fallback due to error: {exc}"

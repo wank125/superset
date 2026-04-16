@@ -80,7 +80,7 @@ class DashboardState(TypedDict, total=False):
     request_id: str
     session_id: str
     user_id: int
-    database_id: int
+    database_id: int | None  # None → select_database node auto-selects
     schema_name: str | None
     agent_mode: str  # "chart" | "dashboard"
     channel_id: str  # Redis stream channel for real-time event publishing

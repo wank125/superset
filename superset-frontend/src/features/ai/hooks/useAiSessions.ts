@@ -77,7 +77,7 @@ export default function useAiSessions() {
   }, [sessions, searchQuery]);
 
   const createSession = useCallback(
-    (databaseId: number | null, agentType = 'nl2sql'): string => {
+    (databaseId: number | null, agentType = 'data_assistant'): string => {
       const id = generateSessionId();
       const now = Date.now();
       const session: AiSession = {

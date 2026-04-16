@@ -21,6 +21,7 @@ import { useState } from 'react';
 import { styled, t } from '@superset-ui/core';
 import { Modal, Select } from '@superset-ui/core/components';
 import { Radio, RadioChangeEvent } from '@superset-ui/core/components/Radio';
+import { AGENT_MODES_WITH_AUTO } from '../types';
 
 interface AiNewSessionModalProps {
   visible: boolean;
@@ -33,14 +34,6 @@ const AgentModeGroup = styled.div`
   margin-bottom: 16px;
 `;
 
-const AGENT_MODES = [
-  { label: 'Auto', value: 'auto' },
-  { label: 'SQL', value: 'nl2sql' },
-  { label: 'Chart', value: 'chart' },
-  { label: 'Dashboard', value: 'dashboard' },
-  { label: 'Copilot', value: 'copilot' },
-];
-
 export function AiNewSessionModal({
   visible,
   databases,
@@ -49,9 +42,6 @@ export function AiNewSessionModal({
 }: AiNewSessionModalProps) {
   const [selectedDb, setSelectedDb] = useState<number | undefined>(undefined);
   const [agentType, setAgentType] = useState('auto');
-
-  const isCopilot = agentType === 'copilot';
-  const isAuto = agentType === 'auto';
 
   const handlePrimaryAction = () => {
     onCreate(selectedDb ?? null, agentType);
@@ -78,7 +68,7 @@ export function AiNewSessionModal({
       onHide={handleHide}
       onHandledPrimaryAction={handlePrimaryAction}
       primaryButtonName={t('创建')}
-      disablePrimaryButton={!isCopilot && !isAuto && selectedDb === undefined}
+      disablePrimaryButton={false}
       destroyOnHidden
     >
       <AgentModeGroup>
@@ -87,14 +77,13 @@ export function AiNewSessionModal({
           optionType="button"
           buttonStyle="solid"
           size="small"
-          options={AGENT_MODES}
+          options={AGENT_MODES_WITH_AUTO}
           value={agentType}
           onChange={(e: RadioChangeEvent) => setAgentType(e.target.value)}
         />
       </AgentModeGroup>
       <div style={{ marginBottom: 8 }}>
-        {t('选择数据库')}
-        {!isCopilot && ' *'}
+        {t('选择数据库（可选）')}
       </div>
       <Select
         style={{ width: '100%' }}

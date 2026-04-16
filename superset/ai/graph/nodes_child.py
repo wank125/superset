@@ -21,6 +21,7 @@ Nodes:
   C2 validate_sql          [Code]
   C3 execute_query         [Code]
   C4 analyze_result        [Code]
+  C4b generate_questions   [LLM]
   C5 select_chart          [LLM]
   C6 normalize_chart_params [Code]
   C7 repair_chart_params   [LLM]
@@ -44,10 +45,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_SQL_ATTEMPTS = 3
 _MAX_REPAIR_ATTEMPTS = 3
-_AGG_EXPR_RE = re.compile(
-    r"^(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(\*|[A-Za-z_][\w]*)\s*\)$",
-    re.IGNORECASE,
-)
 
 
 def _publish_retry(
@@ -79,7 +76,7 @@ def _publish_retry(
 # ── Prompts ─────────────────────────────────────────────────────────
 
 PLAN_QUERY_PROMPT = """\
-Generate a SQL query plan. Return ONLY valid JSON.
+Generate a SQL query for the given chart goal. Return ONLY valid JSON.
 
 Chart goal: {analysis_intent} — "{slice_name}"
 {sql_hint}
@@ -97,25 +94,26 @@ Business metric definitions (PREFER THESE when user mentions business KPIs):
 
 Output:
 {{
-  "metric_expr": "<aggregate SQL expression such as SUM(col)>",
-  "dimensions": ["<groupby cols>"],
-  "time_field": "<datetime col or null>",
-  "time_grain": "<month|day|year|null>",
-  "filters": [],
-  "order_by": "<col ASC|DESC or null>",
-  "limit": 200
+  "sql": "<complete SELECT statement>",
+  "metric_expr": "<main aggregate expression, e.g. SUM(col)>",
+  "dimensions": ["<groupby column names>"]
 }}
 
 Rules:
+- Write a complete, executable SELECT query in the "sql" field
 - Only use column names from the lists above
-- Do not use saved metric names in metric_expr; convert them to SQL expressions
+- Do not use saved metric names directly; convert them to SQL expressions
 - When business metrics are defined, prefer their SQL expressions over guessing
-- If the chart title mentions a dimension column or its business meaning,
-  include that column in dimensions; e.g. "gender"/"性别" means dimensions
-  must include "gender".
-- For trend charts: include time_field
-- For composition: include 1 low-cardinality dimension
-- LIMIT max 500
+- If the chart title mentions a dimension, include it in GROUP BY and dimensions[]
+- For trend charts: include the time column in SELECT and GROUP BY;
+  use DATE_TRUNC('month', col) or similar for time granularity
+- For composition: include 1 low-cardinality dimension in GROUP BY
+- Always include ORDER BY and LIMIT (max 500)
+- Quote the table name with double quotes ONLY if it contains spaces or special characters
+- Do NOT quote regular column names — use them bare (e.g. developer_type, NOT "developer_type")
+- metric_expr: the main aggregate expression (e.g. SUM(num), COUNT(*))
+- dimensions: list the GROUP BY column names (without aggregate functions)
+- Do not include semicolons
 """
 
 SELECT_CHART_PROMPT = """\
@@ -178,7 +176,7 @@ def plan_query(
     last_err = state.get("last_error")
     if last_err and last_err.get("node") in ("validate_sql", "execute_query"):
         error_hint = (
-            f"\nPrevious attempt failed: {last_err['message']}\nFix the plan."
+            f"\nPrevious attempt failed: {last_err['message']}\nFix the SQL."
         )
 
     sql_hint = intent.get("sql_hint", "")
@@ -236,82 +234,90 @@ def plan_query(
 def validate_sql(
     state: SingleChartState,
 ) -> Command[Literal["execute_query", "plan_query"]]:
-    plan = state["sql_plan"]
+    plan = state.get("sql_plan") or {}
     summary: SchemaSummary = state["schema_summary"]
-    table = summary["table_name"]
-    plan = _normalize_sql_plan(plan or {}, summary)
+    sql = (plan.get("sql") or "").strip()
+    issues: list[str] = []
 
-    # Compile SQL from plan
-    try:
-        sql = _compile_sql(plan, table)
-    except ValueError as exc:
-        if state.get("sql_attempts", 0) >= _MAX_SQL_ATTEMPTS:
-            return Command(
-                update={
-                    "last_error": {
-                        "node": "validate_sql",
-                        "type": "compile_failed",
-                        "message": str(exc),
-                        "recoverable": False,
-                    },
-                },
-                goto="__end__",
-            )
-        attempts = state.get("sql_attempts", 0) + 1
-        _publish_retry(state, node="validate_sql", reason=str(exc), attempt=attempts)
-        return Command(
-            update={
-                "last_error": {
-                    "node": "validate_sql",
-                    "type": "compile_error",
-                    "message": str(exc),
-                    "recoverable": True,
-                },
-                "sql_attempts": attempts,
-            },
-            goto="plan_query",
+    # Phase 1: SQL presence check
+    if not sql:
+        issues.append("LLM did not return a SQL query")
+    else:
+        # Clean trailing semicolons
+        sql = sql.rstrip(";").strip()
+
+        # Phase 1.5: Strip unnecessary double quotes from column names.
+        # LLMs sometimes wrap column names in double quotes ("col_name"),
+        # which breaks MySQL and confuses validation.  Only strip quotes
+        # around known column names — leave table-name quoting intact.
+        known_cols = set(
+            summary["datetime_cols"]
+            + summary["dimension_cols"]
+            + summary["metric_cols"]
         )
+        for col in known_cols:
+            # Use word-boundary regex to avoid substring corruption
+            # (e.g. don't break "full_name" when stripping quotes around "name").
+            sql = re.sub(rf'"\b{re.escape(col)}\b"', col, sql)
 
-    # Static validation
-    known_cols = set(
-        summary["datetime_cols"]
-        + summary["dimension_cols"]
-        + summary["metric_cols"]
-    )
-    issues = _validate_sql_static(sql, known_cols)
+        # Phase 2: Mutation check (same as ExecuteSqlTool)
+        try:
+            from superset.sql.parse import SQLScript
 
+            script = SQLScript(sql, engine="sqlite")
+            if script.has_mutation():
+                issues.append(
+                    "SQL contains forbidden DDL/DML statements "
+                    "(INSERT, UPDATE, DELETE, DROP, etc.)"
+                )
+        except Exception as exc:
+            logger.debug("SQLScript parse skipped in validate_sql: %s", exc)
+
+        # Phase 3: Ensure LIMIT
+        sql_upper = sql.upper()
+        if "LIMIT" not in sql_upper:
+            sql += " LIMIT 200"
+        else:
+            limit_match = re.search(r"LIMIT\s+(\d+)", sql, re.IGNORECASE)
+            if limit_match and int(limit_match.group(1)) > 500:
+                sql = re.sub(r"LIMIT\s+\d+", "LIMIT 500", sql, flags=re.IGNORECASE)
+
+        # Phase 4: Column name validation
+        issues.extend(_validate_sql_static(sql, known_cols))
+
+    # Retry or fail
     if issues:
+        msg = "; ".join(issues)
         if state.get("sql_attempts", 0) >= _MAX_SQL_ATTEMPTS:
             return Command(
                 update={
                     "last_error": {
                         "node": "validate_sql",
                         "type": "validation_failed",
-                        "message": "; ".join(issues),
+                        "message": msg,
                         "recoverable": False,
                     },
                 },
                 goto="__end__",
             )
         attempts = state.get("sql_attempts", 0) + 1
-        _publish_retry(
-            state,
-            node="validate_sql",
-            reason="; ".join(issues),
-            attempt=attempts,
-        )
+        _publish_retry(state, node="validate_sql", reason=msg, attempt=attempts)
         return Command(
             update={
                 "last_error": {
                     "node": "validate_sql",
-                    "type": "field_not_found",
-                    "message": "; ".join(issues),
+                    "type": "validation_failed",
+                    "message": msg,
                     "recoverable": True,
                 },
                 "sql_attempts": attempts,
             },
             goto="plan_query",
         )
+
+    # Defaults for downstream select_chart node
+    plan.setdefault("metric_expr", "COUNT(*)")
+    plan.setdefault("dimensions", [])
 
     return Command(
         update={
@@ -322,126 +328,6 @@ def validate_sql(
         },
         goto="execute_query",
     )
-
-
-def _normalize_sql_plan(
-    plan: dict[str, Any],
-    summary: SchemaSummary,
-) -> dict[str, Any]:
-    """Make LLM SQL plans executable before compiling SQL."""
-    normalized = dict(plan)
-    metric_cols = summary["metric_cols"]
-    valid_cols = set(
-        summary["datetime_cols"]
-        + summary["dimension_cols"]
-        + metric_cols
-    )
-
-    normalized["metric_expr"] = _normalize_metric_expr(
-        normalized.get("metric_expr"),
-        metric_cols,
-        summary.get("saved_metric_expressions", {}),
-    )
-
-    dimensions = normalized.get("dimensions") or []
-    if isinstance(dimensions, str):
-        dimensions = [dimensions]
-    normalized["dimensions"] = [dim for dim in dimensions if dim in valid_cols]
-
-    if normalized.get("time_field") not in summary["datetime_cols"]:
-        normalized["time_field"] = None
-
-    order_by = normalized.get("order_by")
-    if order_by:
-        order_col = str(order_by).split()[0]
-        if order_col not in valid_cols:
-            normalized["order_by"] = None
-
-    return normalized
-
-
-def _normalize_metric_expr(
-    metric_expr: Any,
-    metric_cols: list[str],
-    saved_metric_expressions: dict[str, str],
-) -> str:
-    """Return an executable aggregate expression for the SQL query."""
-    fallback = f"SUM({metric_cols[0]})" if metric_cols else "COUNT(*)"
-
-    if isinstance(metric_expr, list):
-        metric_expr = metric_expr[0] if metric_expr else None
-    if not metric_expr:
-        return fallback
-
-    metric = str(metric_expr).strip()
-    if metric in saved_metric_expressions:
-        expression = saved_metric_expressions[metric].strip()
-        return expression or fallback
-
-    if metric in metric_cols:
-        return f"SUM({metric})"
-
-    match = _AGG_EXPR_RE.match(metric)
-    if match:
-        col_name = match.group(2)
-        if col_name == "*" or col_name in metric_cols:
-            return metric
-
-    # Complex SQL expressions from metric catalog (CASE WHEN, NULLIF, etc.)
-    # Pass through if the expression contains an aggregate function keyword
-    # or if it looks like a custom SQL expression.
-    if re.search(
-        r"\b(SUM|COUNT|AVG|MIN|MAX)\s*\(",
-        metric,
-        re.IGNORECASE,
-    ):
-        return metric
-
-    from superset.ai.graph.normalizer import _looks_like_sql_expression
-
-    if _looks_like_sql_expression(metric):
-        return metric
-
-    return fallback
-
-
-def _compile_sql(plan: dict[str, Any], table: str) -> str:
-    """Convert sql_plan dict to executable SQL."""
-    metric = plan.get("metric_expr", "COUNT(*)")
-    if isinstance(metric, list):
-        metric = ", ".join(metric)
-    dimensions = plan.get("dimensions", [])
-    time_field = plan.get("time_field")
-    limit = min(int(plan.get("limit", 200)), 500)
-
-    select_cols: list[str] = []
-    group_cols: list[str] = []
-
-    if time_field:
-        select_cols.append(time_field)
-        group_cols.append(time_field)
-
-    for dim in dimensions:
-        if dim and dim not in group_cols:
-            select_cols.append(dim)
-            group_cols.append(dim)
-
-    # Add AS alias for aggregate expressions so result column name is stable
-    if _AGG_EXPR_RE.match(metric) or "(" in metric:
-        select_cols.append(f"{metric} AS metric_val")
-    else:
-        select_cols.append(metric)
-
-    sql = f"SELECT {', '.join(select_cols)} FROM {table}"  # noqa: S608
-    if group_cols:
-        sql += f" GROUP BY {', '.join(group_cols)}"
-
-    order_by = plan.get("order_by")
-    if order_by:
-        sql += f" ORDER BY {order_by}"
-
-    sql += f" LIMIT {limit}"
-    return sql
 
 
 def _split_top_level(text: str, delimiter: str) -> list[str]:
@@ -563,7 +449,7 @@ def execute_query(
 
 def analyze_result(
     state: SingleChartState,
-) -> Command[Literal["select_chart"]]:
+) -> Command[Literal["generate_questions"]]:
     from superset.ai.tools.analyze_data import AnalyzeDataTool
 
     raw_str = state["query_result_raw"] or ""
@@ -698,6 +584,47 @@ def analyze_result(
             "suggest_questions": suggest_questions,
             "statistics": statistics,
         },
+        goto="generate_questions",
+    )
+
+
+# ── Node C4b: generate_questions [LLM] ──────────────────────────────
+
+
+def generate_questions(
+    state: SingleChartState,
+) -> Command[Literal["select_chart"]]:
+    from superset.ai.graph.llm_helpers import _get_llm_response
+
+    summary = state.get("query_result_summary", {})
+    
+    # We use the previous node's fallback output as a default
+    suggest_questions = state.get("suggest_questions") or []
+
+    prompt = (
+        f"这是数据查询的结果分析片段:\n"
+        f"  行数: {summary.get('row_count')}\n"
+        f"  指标列: {summary.get('numeric_cols')}\n"
+        f"  维度列: {summary.get('string_cols')}\n"
+        f"  时间列: {summary.get('datetime_col')}\n"
+        f"  一句话洞察: {summary.get('insight')}\n"
+        f"请根据上述数据特征，推理出 3 条用户可能最想进行下钻排查、或多维对比分析的后续跟进问题（用中文）。\n"
+        f"请输出合法JSON，格式如下：\n"
+        f'{{"suggest_questions": ["追问1", "追问2", "追问3"]}}\n\n'
+        f"输出 ONLY JSON，无其他内容。"
+    )
+
+    try:
+        raw_response = _get_llm_response(prompt).strip()
+        from superset.utils import json as superset_json
+        parsed = superset_json.loads(raw_response)
+        if isinstance(parsed, dict) and isinstance(parsed.get("suggest_questions"), list):
+            suggest_questions = [str(q) for q in parsed["suggest_questions"]][:3]
+    except Exception as exc:
+        logger.warning("generate_questions LLM generation failed: %s", exc)
+
+    return Command(
+        update={"suggest_questions": suggest_questions},
         goto="select_chart",
     )
 
@@ -778,10 +705,14 @@ def select_chart(
             goto="__end__",
         )
     preferred_viz = intent.get("preferred_viz")
-    if preferred_viz:
-        chart_plan["viz_type"] = preferred_viz
     # Phase 19b: determine suggested_width from chart type registry
-    viz_type = chart_plan.get("viz_type", "table")
+    from superset.ai.graph.nodes_parent import _normalize_preferred_viz
+
+    # Normalize preferred_viz before override to avoid short aliases (e.g. "bar")
+    if preferred_viz:
+        chart_plan["viz_type"] = _normalize_preferred_viz(preferred_viz) or preferred_viz
+    viz_type = _normalize_preferred_viz(chart_plan.get("viz_type")) or "table"
+    chart_plan["viz_type"] = viz_type
     desc = get_chart_registry().get(viz_type)
     suggested_width = desc.default_width if desc else 4
     return Command(

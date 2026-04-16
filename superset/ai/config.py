@@ -35,8 +35,8 @@ def get_default_provider_name() -> str:
 
 
 def get_max_turns() -> int:
-    """Return the max ReAct loop turns."""
-    return int(get_ai_config("AI_AGENT_MAX_TURNS", 10))
+    """Return the max ReAct loop turns (each LLM call + tool call = 2 turns)."""
+    return int(get_ai_config("AI_AGENT_MAX_TURNS", 25))
 
 
 def get_agent_timeout() -> int:

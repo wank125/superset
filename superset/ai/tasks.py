@@ -163,19 +163,17 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                     # P1 fix: re-check routed agent against its feature flag
                     _GATED: dict[str, str] = {
                         "chart": "AI_AGENT_CHART",
-                        "debug": "AI_AGENT_DEBUG",
                         "dashboard": "AI_AGENT_DASHBOARD",
-                        "copilot": "AI_AGENT_COPILOT",
                     }
                     if agent_type in _GATED and not is_feature_enabled(
                         _GATED[agent_type]
                     ):
                         logger.warning(
-                            "Routed to %s but flag %s is off, falling back to nl2sql",
+                            "Routed to %s but flag %s is off, falling back to data_assistant",
                             agent_type,
                             _GATED[agent_type],
                         )
-                        agent_type = "nl2sql"
+                        agent_type = "data_assistant"
 
                     # Persist routing decision for next-turn context.
                     ctx.add_router_meta(
@@ -208,7 +206,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                     )
                 else:
                     # Feature flag off — safe downgrade.
-                    agent_type = "nl2sql"
+                    agent_type = "data_assistant"
             # ── End Phase 16 ─────────────────────────────────────────
 
             # Path selection (priority order):
@@ -233,6 +231,9 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                         f"我可以帮你创建{target}，但需要你先确认。"
                         f"我还没有执行任何创建操作。请回复“确认创建{target}”后我再继续。"
                     )
+                    # Store the original request so the confirmation turn can
+                    # recover it without fragile history position traversal.
+                    ctx.add_tool_summary("original_request", message)
                     stream.publish_event(
                         channel_id,
                         AgentEvent(
@@ -270,6 +271,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 assistant_summary = ""
                 sql_executed = ""
                 created_chart_summaries: list[str] = []
+                analysis_plan_data: dict[str, Any] | None = None
                 done_data: dict[str, Any] = {}
                 for event in events:
                     stream.publish_event(channel_id, event)
@@ -282,6 +284,8 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                             f"slice_name={event.data.get('slice_name')}, "
                             f"viz_type={event.data.get('viz_type')}"
                         )
+                    if event.type == "analysis_plan" and event.data:
+                        analysis_plan_data = event.data
                     if event.type == "done":
                         assistant_summary = event.data.get("summary", "")
                         done_data = event.data
@@ -312,6 +316,15 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 # Phase 11: persist created charts for "modify this chart" context
                 for chart_summary in created_chart_summaries:
                     ctx.add_tool_summary("create_chart", chart_summary)
+
+                # Phase 19: persist analysis plan for confirmation flow
+                if analysis_plan_data:
+                    import json as _json
+
+                    ctx.add_tool_summary(
+                        "analysis_plan",
+                        _json.dumps(analysis_plan_data),
+                    )
             else:
                 runner = create_agent_runner(
                     agent_type=agent_type,
@@ -342,8 +355,14 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
             channel_id,
             AgentEvent(
                 type="error",
-                data={"message": format_user_facing_error(exc)},
+                data={"message": f"处理出错：{format_user_facing_error(exc)}"},
             ),
+        )
+        # Always emit a done event so the client knows the stream is complete.
+        # Without this, the SSE poller hangs until timeout if the agent crashes.
+        stream.publish_event(
+            channel_id,
+            AgentEvent(type="done", data={}),
         )
     finally:
         _cleanup_db_session(dispose_engine=True)

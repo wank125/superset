@@ -29,6 +29,7 @@ import { AiClarifyOptions } from './AiClarifyOptions';
 import { AlertConfigCard } from './AlertConfigCard';
 import { generateAlertConfig } from '../api/aiClient';
 import type { AiAlertConfigResponse } from '../types';
+import { AGENT_MODES } from '../types';
 
 interface AiChatPanelProps {
   databaseId: number;
@@ -140,13 +141,6 @@ const ResultLabel = styled.span`
   margin-right: 8px;
 `;
 
-const AGENT_MODES = [
-  { label: 'SQL', value: 'nl2sql' },
-  { label: 'Chart', value: 'chart' },
-  { label: 'Dashboard', value: 'dashboard' },
-  { label: 'Alert', value: 'alert' },
-];
-
 export function AiChatPanel({
   databaseId,
   onSqlGenerated,
@@ -154,7 +148,7 @@ export function AiChatPanel({
   onDashboardCreated,
   onClose,
 }: AiChatPanelProps) {
-  const [agentType, setAgentType] = useState('nl2sql');
+  const [agentType, setAgentType] = useState('data_assistant');
   const [inputValue, setInputValue] = useState('');
   const [alertConfig, setAlertConfig] =
     useState<AiAlertConfigResponse | null>(null);
@@ -275,7 +269,7 @@ export function AiChatPanel({
             )}
             {msg.role === 'assistant' && idx === messages.length - 1 && (
               <>
-                {agentType === 'nl2sql' && (
+                {agentType === 'data_assistant' && (
                   <AiSqlPreview
                     sql={msg.content}
                     onCopyToEditor={onSqlGenerated}

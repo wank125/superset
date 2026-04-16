@@ -25,6 +25,8 @@ import uuid
 from collections.abc import Iterator
 from typing import Any
 
+import httpx
+
 from superset.ai.agent.events import AgentEvent
 from superset.ai.errors import format_user_facing_error
 
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Node → (start message, done message)
 _NODE_PROGRESS: dict[str, tuple[str, str | None]] = {
+    "select_database": ("选择数据库...", "数据库已确定"),
     "classify_intent": ("判断意图...", "意图识别完成"),
     "load_existing_chart": ("加载图表...", "图表加载完成"),
     "apply_chart_modification": ("计算修改...", "修改方案已生成"),
@@ -100,12 +103,19 @@ def _parse_text_table_for_event(
 
     # Infer column types
     columns: list[dict[str, str]] = []
+
+    def _check_is_num(val: str) -> bool:
+        if not val:
+            return True
+        try:
+            float(val)
+            return True
+        except ValueError:
+            return False
+
     for h in headers:
         samples = [str(r.get(h, "")) for r in rows[:5]]
-        is_num = all(
-            s == "" or s.replace(".", "").replace("-", "").isdigit()
-            for s in samples
-        )
+        is_num = all(_check_is_num(s) for s in samples)
         # DATETIME detection: use column name heuristic first,
         # then conservative value pattern (must look like YYYY-MM or YYYY/MM)
         is_dttm_by_name = any(
@@ -134,7 +144,7 @@ def run_graph(  # noqa: C901
     agent_mode: str,
     user_id: int,
     session_id: str,
-    database_id: int,
+    database_id: int | None = None,
     schema_name: str | None,
     message: str,
     channel_id: str | None = None,
@@ -153,8 +163,90 @@ def run_graph(  # noqa: C901
     )
     request_id = str(uuid.uuid4())
 
+    # Detect if the user is confirming a previously-blocked request.
+    # Two scenarios:
+    # 1. Phase 19: analysis_plan was published in a prior turn — detect it
+    #    and set execution_mode="direct" to skip re-planning.
+    # 2. tasks.py confirmation gate: Turn 1 was blocked before graph ran,
+    #    so no analysis_plan exists.  The original request was stored as
+    #    a tool_summary("original_request") — look it up directly.
+    _execution_mode: str | None = None
+    _effective_request = message
+    _history = conversation_history or []
+    _found_plan = False
+    logger.info(
+        "plan_detection request=%r history_entries=%d",
+        message[:80], len(_history),
+    )
+
+    # Helper: find the stored original_request from tool_summary.
+    def _find_original_request() -> str | None:
+        for entry in reversed(_history[-10:]):
+            if (
+                entry.get("role") == "tool_summary"
+                and entry.get("tool") == "original_request"
+                and entry.get("content")
+            ):
+                return entry["content"]
+        return None
+
+    for entry in reversed(_history[-10:]):
+        role = entry.get("role", "")
+        tool = entry.get("tool", "")
+        logger.debug("plan_detection_scan role=%s tool=%s", role, tool)
+        if role == "tool_summary" and tool == "analysis_plan":
+            from superset.ai.agent.confirmation import is_creation_confirmed
+
+            _found_plan = True
+            if is_creation_confirmed(message):
+                _execution_mode = "direct"
+                # Prefer explicitly stored original_request over history
+                # position traversal (fragile if conversation has extra turns).
+                stored = _find_original_request()
+                if stored:
+                    _effective_request = stored
+                else:
+                    # Legacy fallback: walk history for 2nd user message
+                    user_count = 0
+                    for prior in reversed(_history):
+                        if prior.get("role") == "user" and prior.get("content"):
+                            user_count += 1
+                            if user_count == 2:
+                                _effective_request = prior["content"]
+                                break
+                logger.info(
+                    "plan_confirmation_detected effective_request=%r",
+                    _effective_request[:80],
+                )
+            break
+
+    # Fallback: tasks.py blocked Turn 1 (no analysis_plan in history),
+    # but the current message is a confirmation phrase.
+    if not _found_plan:
+        from superset.ai.agent.confirmation import is_creation_confirmed
+
+        if is_creation_confirmed(message):
+            _execution_mode = "direct"
+            stored = _find_original_request()
+            if stored:
+                _effective_request = stored
+            else:
+                # Legacy fallback: walk history for 2nd user message
+                user_count = 0
+                for prior in reversed(_history):
+                    if prior.get("role") == "user" and prior.get("content"):
+                        user_count += 1
+                        if user_count == 2:
+                            _effective_request = prior["content"]
+                            break
+            logger.info(
+                "tasks_confirmation_fallback effective_request=%r "
+                "execution_mode=direct",
+                _effective_request[:80],
+            )
+
     initial_state: dict[str, Any] = {
-        "request": message,
+        "request": _effective_request,
         "request_id": request_id,
         "session_id": session_id,
         "user_id": user_id,
@@ -162,72 +254,110 @@ def run_graph(  # noqa: C901
         "schema_name": schema_name,
         "agent_mode": agent_mode,
         "channel_id": channel_id or "",
-        "conversation_history": conversation_history or [],
+        "conversation_history": _history,
         "created_charts": [],
         "repair_attempts": 0,
         "sql_attempts": 0,
         "previous_charts": previous_charts or [],
+        "execution_mode": _execution_mode,
     }
     config: dict[str, Any] = {
         "configurable": {"thread_id": session_id},
         "recursion_limit": 100,
     }
 
-    try:
-        # Collect terminal state for conversation summary
-        created_charts: list[dict[str, Any]] = []
-        created_dashboard: dict[str, Any] | None = None
-        last_error: dict[str, Any] | None = None
-        last_sql: str | None = None
-        last_table_name: str | None = None
-        last_analysis_intent: str | None = None
-        last_row_count: int | None = None
+    # Collect terminal state for conversation summary
+    created_charts: list[dict[str, Any]] = []
+    created_dashboard: dict[str, Any] | None = None
+    last_error: dict[str, Any] | None = None
+    last_sql: str | None = None
+    last_table_name: str | None = None
+    last_analysis_intent: str | None = None
+    last_row_count: int | None = None
 
-        # stream_mode="updates" yields after each node completes
-        t_node_start = time.monotonic()
-        for state_update in graph.stream(
-            initial_state, config=config, stream_mode="updates",
-        ):
-            if not isinstance(state_update, dict):
-                continue
-            for node_name, node_output in state_update.items():
-                elapsed_ms = int((time.monotonic() - t_node_start) * 1000)
-                logger.info(
-                    "graph_node_complete request_id=%s node=%s elapsed_ms=%d",
-                    request_id, node_name, elapsed_ms,
+    # Transient error retry — same pattern as LangChain runner.
+    # Retries on LLM API connection issues; non-retryable errors
+    # break immediately.
+    _RETRYABLE = (
+        httpx.RemoteProtocolError,
+        httpx.ReadTimeout,
+        httpx.ConnectTimeout,
+        ConnectionError,
+        TimeoutError,
+    )
+    max_retries = 2
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            # stream_mode="updates" yields after each node completes
+            t_node_start = time.monotonic()
+            for state_update in graph.stream(
+                initial_state, config=config, stream_mode="updates",
+            ):
+                if not isinstance(state_update, dict):
+                    continue
+                for node_name, node_output in state_update.items():
+                    elapsed_ms = int((time.monotonic() - t_node_start) * 1000)
+                    logger.info(
+                        "graph_node_complete request_id=%s node=%s "
+                        "elapsed_ms=%d",
+                        request_id, node_name, elapsed_ms,
+                    )
+                    t_node_start = time.monotonic()
+                    if isinstance(node_output, dict):
+                        # Track terminal outputs for conversation summary
+                        _acc = node_output.get("created_charts")
+                        if _acc:
+                            created_charts.extend(_acc)
+                        _cd = node_output.get("created_dashboard")
+                        if _cd:
+                            created_dashboard = _cd
+                        _le = node_output.get("last_error")
+                        if isinstance(_le, dict):
+                            last_error = _le
+                        # Phase 11: collect SQL, table, intent for rich summary
+                        _sql = node_output.get("sql")
+                        if _sql:
+                            last_sql = _sql
+                        _schema = node_output.get("schema_summary")
+                        if isinstance(_schema, dict) and _schema.get("table_name"):
+                            last_table_name = _schema["table_name"]
+                        _goal = node_output.get("goal")
+                        if isinstance(_goal, dict) and _goal.get("analysis_intent"):
+                            last_analysis_intent = _goal["analysis_intent"]
+                        _summary = node_output.get("query_result_summary")
+                        if isinstance(_summary, dict) and "row_count" in _summary:
+                            last_row_count = _summary["row_count"]
+                        yield from _emit_node_events(node_name, node_output)
+            break  # success
+
+        except _RETRYABLE as exc:
+            logger.warning(
+                "Graph transient error (attempt %d/%d): %s",
+                attempt, max_retries, exc,
+            )
+            if attempt < max_retries:
+                yield AgentEvent(
+                    type="thinking",
+                    data={
+                        "content": (
+                            f"连接暂时中断，正在重试 ({attempt}/{max_retries})..."
+                        ),
+                    },
                 )
-                t_node_start = time.monotonic()
-                if isinstance(node_output, dict):
-                    # Track terminal outputs for conversation summary
-                    _acc = node_output.get("created_charts")
-                    if _acc:
-                        created_charts.extend(_acc)
-                    _cd = node_output.get("created_dashboard")
-                    if _cd:
-                        created_dashboard = _cd
-                    _le = node_output.get("last_error")
-                    if isinstance(_le, dict):
-                        last_error = _le
-                    # Phase 11: collect SQL, table, intent for rich summary
-                    _sql = node_output.get("sql")
-                    if _sql:
-                        last_sql = _sql
-                    _schema = node_output.get("schema_summary")
-                    if isinstance(_schema, dict) and _schema.get("table_name"):
-                        last_table_name = _schema["table_name"]
-                    _goal = node_output.get("goal")
-                    if isinstance(_goal, dict) and _goal.get("analysis_intent"):
-                        last_analysis_intent = _goal["analysis_intent"]
-                    _summary = node_output.get("query_result_summary")
-                    if isinstance(_summary, dict) and "row_count" in _summary:
-                        last_row_count = _summary["row_count"]
-                    yield from _emit_node_events(node_name, node_output)
-    except Exception as exc:
-        logger.exception("Graph execution failed")
-        yield AgentEvent(
-            type="error",
-            data={"message": format_user_facing_error(exc)},
-        )
+                continue
+            yield AgentEvent(
+                type="error",
+                data={"message": "AI 服务暂时不可用，请稍后重试。"},
+            )
+
+        except Exception as exc:
+            logger.exception("Graph execution failed")
+            yield AgentEvent(
+                type="error",
+                data={"message": f"处理出错：{format_user_facing_error(exc)}"},
+            )
+            break
 
     # Build a conversation summary for multi-turn context
     summary = _build_summary(
@@ -297,12 +427,8 @@ def _emit_node_events(  # noqa: C901
         return
 
     if node_name == "review_analysis":
-        # Only emit in direct mode — plan mode already published via
-        # _publish_plan_event inside the node itself.
-        if node_output.get("execution_mode") != "plan":
-            plan = node_output.get("analysis_plan")
-            if plan:
-                yield AgentEvent(type="analysis_plan", data=plan)
+        # analysis_plan is already emitted by _publish_plan_event inside
+        # the review_analysis node — don't duplicate here.
         return
 
     if node_name == "validate_sql":

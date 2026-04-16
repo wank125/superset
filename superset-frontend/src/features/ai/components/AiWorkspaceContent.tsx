@@ -169,7 +169,7 @@ export function AiWorkspaceContent({
             )}
             {msg.role === 'assistant' && idx === messages.length - 1 && (
               <>
-                {agentType === 'nl2sql' && !hasSqlBlock(msg.content) && (
+                {agentType === 'data_assistant' && !hasSqlBlock(msg.content) && (
                   <AiSqlPreview sql={msg.content} onCopyToEditor={onSqlCopy} />
                 )}
                 {(agentType === 'chart' || agentType === 'dashboard') &&

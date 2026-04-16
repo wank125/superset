@@ -17,6 +17,7 @@
 """Parent graph nodes — dashboard-level orchestration.
 
 Nodes:
+  P0a check_schema             [Code]
   P0  classify_intent          [Code + optional LLM]
   P0b load_existing_chart      [Code]
   P0c apply_chart_modification [LLM]
@@ -179,6 +180,18 @@ def _is_numeric_type(t: str) -> bool:
     )
 
 
+def _was_plan_published(history: list[dict[str, Any]]) -> bool:
+    """Check if an analysis plan was published in a previous turn."""
+    for entry in reversed(history[-10:]):
+        if (
+            entry.get("role") == "tool_summary"
+            and entry.get("tool") == "analysis_plan"
+            and entry.get("content")
+        ):
+            return True
+    return False
+
+
 def _normalize_preferred_viz(value: Any) -> str | None:
     """Normalize model/user chart aliases to supported Superset viz_type values."""
     if not value:
@@ -197,6 +210,18 @@ def _normalize_preferred_viz(value: Any) -> str | None:
         "饼图": "pie",
         "pie_chart": "pie",
         "table_chart": "table",
+        "area": "echarts_area",
+        "area_chart": "echarts_area",
+        "面积图": "echarts_area",
+        "number": "big_number_total",
+        "big_number": "big_number_total",
+        "kpi": "big_number_total",
+        "大数字": "big_number_total",
+        "timeseries": "echarts_timeseries_line",
+        "scatter": "echarts_scatter",
+        "散点图": "echarts_scatter",
+        "radar": "radar",
+        "雷达图": "radar",
     }
     normalized = aliases.get(raw, raw)
 
@@ -256,6 +281,152 @@ Rules:
 - For filter changes, use adhoc_filters array
 - For metric changes, use metrics (list) or metric (single)
 """
+
+
+# ── Node P-1: select_database [Code] ─────────────────────────────────
+
+
+def select_database(
+    state: DashboardState,
+) -> Command[Literal["check_schema", "clarify_user", "__end__"]]:
+    """Auto-select database if only one exists, otherwise ask user.
+
+    - database_id already set → pass through
+    - User answered clarify: parse "使用数据库 <name>" prefix
+    - 1 database → auto-select
+    - 0 databases → error
+    - Multiple → clarify_user
+    """
+    # 1. Already have database_id → pass through
+    if state.get("database_id"):
+        return Command(goto="check_schema")
+
+    # 2. User answered clarify: parse prefix
+    prefix = "使用数据库 "
+    request_text = state.get("request", "")
+    if request_text.startswith(prefix):
+        db_name = request_text[len(prefix):].strip()
+        from superset.daos.database import DatabaseDAO
+
+        database = DatabaseDAO.find_one_or_none(database_name=db_name)
+        if database:
+            return Command(
+                update={"database_id": database.id},
+                goto="check_schema",
+            )
+        logger.warning("select_database: DB '%s' not found, re-asking", db_name)
+
+    # 3. Query accessible databases
+    from superset.daos.database import DatabaseDAO
+
+    databases = DatabaseDAO.find_all()
+
+    # 4. No databases → error
+    if not databases:
+        return Command(
+            update={
+                "last_error": {
+                    "type": "no_database",
+                    "message": "没有可用的数据库连接",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
+
+    # 5. Single database → auto-select
+    if len(databases) == 1:
+        return Command(
+            update={"database_id": databases[0].id},
+            goto="check_schema",
+        )
+
+    # 6. Multiple → ask user
+    options = [
+        {"label": db.database_name, "value": db.database_name}
+        for db in databases[:10]
+    ]
+    return Command(
+        update={
+            "clarify_question": "请选择要分析的数据库：",
+            "clarify_type": "database_selection",
+            "clarify_options": options,
+            "answer_prefix": prefix,
+        },
+        goto="clarify_user",
+    )
+
+
+# ── Node P0a: check_schema [Code] ─────────────────────────────────
+
+
+def check_schema(
+    state: DashboardState,
+) -> Command[Literal["classify_intent", "clarify_user", "__end__"]]:
+    """Check database schemas and disambiguate if necessary."""
+    from superset.daos.database import DatabaseDAO
+
+    # If schema is already set or explicitly ignored
+    if state.get("schema_name"):
+        return Command(goto="classify_intent")
+
+    # Has the user selected a schema in this turn?
+    # Based on answer_prefix, e.g., "分析的 Schema: {value}" or similar
+    request_text = state.get("request", "")
+    prefix = "使用 Schema "
+    if request_text.startswith(prefix):
+        selected_schema = request_text[len(prefix):].strip()
+        return Command(
+            update={"schema_name": selected_schema},
+            goto="classify_intent",
+        )
+
+    database = DatabaseDAO.find_by_id(state["database_id"])
+    if not database:
+        return Command(
+            update={
+                "last_error": {
+                    "type": "db_not_found",
+                    "message": "指定的数据库不存在",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
+
+    # Fetch available schemas
+    schemas = []
+    try:
+        with database.get_inspector() as inspector:
+            if hasattr(inspector, "get_schema_names"):
+                all_schemas = inspector.get_schema_names()
+                # Filter out raw system catalogs
+                schemas = [s for s in all_schemas if s and s not in ("information_schema", "pg_catalog")]
+    except Exception as exc:
+        logger.warning("check_schema failed to get schemas: %s", exc)
+
+    if not schemas:
+        return Command(goto="classify_intent")
+
+    if len(schemas) == 1 or ("public" in schemas and len(schemas) < 3):
+        # Auto-select the only schema, or 'public' if reasonable
+        chosen = "public" if "public" in schemas else schemas[0]
+        return Command(
+            update={"schema_name": chosen},
+            goto="classify_intent",
+        )
+
+    # Prompt user for schema
+    options = [{"label": s, "value": s} for s in schemas[:15]]
+    return Command(
+        update={
+            "clarify_question": "发现该数据库结构包含多个业务域（Schema），请问您需要基于哪一个进行数据分析？",
+            "clarify_type": "schema_selection",
+            "clarify_options": options,
+            "answer_prefix": prefix,
+        },
+        goto="clarify_user",
+    )
 
 
 # ── Node P0: classify_intent [Code + optional LLM] ────────────────
@@ -336,8 +507,17 @@ def load_existing_chart(
             logger.warning("load_existing_chart: user lacks Chart write permission")
             return Command(goto="parse_request")
     except Exception:
-        logger.warning("load_existing_chart: permission check failed")
-        return Command(goto="parse_request")
+        logger.exception("load_existing_chart: permission check failed")
+        return Command(
+            update={
+                "last_error": {
+                    "type": "permission_check_error",
+                    "message": "权限检查异常，无法加载图表",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
 
     return Command(
         update={
@@ -481,7 +661,17 @@ def update_chart(
                 goto="__end__",
             )
     except Exception:
-        logger.warning("update_chart: permission check failed")
+        logger.exception("update_chart: permission check failed")
+        return Command(
+            update={
+                "last_error": {
+                    "type": "permission_check_error",
+                    "message": "权限检查异常，拒绝修改",
+                    "recoverable": False,
+                },
+            },
+            goto="__end__",
+        )
 
     slice_obj.viz_type = mod.get("new_viz_type", slice_obj.viz_type)
     slice_obj.slice_name = mod.get("new_slice_name", slice_obj.slice_name)
@@ -523,6 +713,14 @@ def parse_request(
         if role and content:
             history_lines += f"\n{role}: {content}"
     context_block = f"\nConversation history:{history_lines}" if history_lines else ""
+
+    # Inject available table names so the LLM can pick the correct target_table
+    available_tables = _get_all_accessible_datasets(state.get("database_id"))
+    if available_tables:
+        context_block += (
+            f"\nAvailable tables in this database: "
+            f"{', '.join(available_tables)}"
+        )
 
     prompt = PARSE_PROMPT.format(
         request=state["request"][:500],
@@ -758,7 +956,11 @@ def select_dataset(  # noqa: C901
         match_score = float(c.get("match_score", 0)) if isinstance(c, dict) else 0.0
 
         # Base score from string matching
-        if name_lower == target:
+        # Guard: empty target matches everything via startswith/contains —
+        # skip string scoring so fuzzy match can rank candidates instead.
+        if not target:
+            score = 0
+        elif name_lower == target:
             score = 100
         elif name_lower.startswith(target):
             score = 50
@@ -767,13 +969,27 @@ def select_dataset(  # noqa: C901
         else:
             score = 0
 
-        # Phase 12: add fuzzy match_score weight (0-60 range)
-        if score == 0 and match_score > 0:
-            score = match_score * 60
+        # Phase 12: add fuzzy match_score weight (additive, not replace-only)
+        # Previously this only applied when score==0, which caused correct
+        # substring matches (e.g. "birth" in "birth_names") to lose out to
+        # unrelated datasets with higher fuzzy scores (e.g. "FCC 2018 Survey").
+        if match_score > 0:
+            score += match_score * 30
 
         # Phase 12: bonus for description keyword match
-        if target in desc and score < 100:
+        if target and target in desc and score < 100:
             score += 10
+
+        # When target is empty and no match_score, use difflib against the
+        # original request to find the most relevant table by name similarity.
+        if score == 0 and not target:
+            from difflib import SequenceMatcher
+            request_text = state.get("request", "").lower()
+            ratio = SequenceMatcher(
+                None, request_text, name_lower,
+            ).ratio()
+            if ratio >= 0.1:
+                score = ratio * 20
 
         scored.append((score, c))
 
@@ -1340,6 +1556,18 @@ def review_analysis(
     # 1. Second turn after user confirmed: skip review
     if state.get("execution_mode") == "direct":
         return Command(goto="single_chart_subgraph")
+
+    # 1b. Check if a plan was already published in a previous turn
+    # and the current message contains confirmation terms — force direct mode.
+    from superset.ai.agent.confirmation import is_creation_confirmed
+
+    history = state.get("conversation_history", [])
+    request = state.get("request", "")
+    if _was_plan_published(history) and is_creation_confirmed(request):
+        return Command(
+            update={"execution_mode": "direct"},
+            goto="single_chart_subgraph",
+        )
 
     # 2. Compute confidence (pure code, zero LLM overhead)
     confidence = _compute_confidence(state)

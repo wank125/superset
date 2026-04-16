@@ -22,6 +22,8 @@ import logging
 from difflib import SequenceMatcher
 from typing import Any
 
+from sqlalchemy import or_
+
 from superset import db
 from superset.ai.tools.base import BaseTool
 from superset.connectors.sqla.models import SqlaTable
@@ -147,7 +149,16 @@ class SearchDatasetsTool(BaseTool):
             SqlaTable.database_id == self._database_id,
         )
         if self._schema_name:
-            query = query.filter(SqlaTable.schema == self._schema_name)
+            # PostgreSQL "public" schema is often stored as NULL in SqlaTable
+            if self._schema_name == "public":
+                query = query.filter(
+                    or_(
+                        SqlaTable.schema == "public",
+                        SqlaTable.schema.is_(None),
+                    ),
+                )
+            else:
+                query = query.filter(SqlaTable.schema == self._schema_name)
         all_tables = query.limit(50).all()
         accessible = [t for t in all_tables if _can_access(t)]
 

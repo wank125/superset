@@ -36,6 +36,12 @@ from superset.ai.graph.state import ChartPlan, SchemaSummary
 
 logger = logging.getLogger(__name__)
 
+SAFE_VISUAL_PARAMS: frozenset[str] = frozenset({
+    "donut", "show_legend", "row_limit", "color_scheme",
+    "label_colors", "y_axis_bounds", "zoomable", "opacity",
+    "stack", "only_total", "show_value", "innerRadius",
+})
+
 # Regex for simple aggregate expressions like "SUM(col)" or "COUNT(*)"
 _AGG_EXPR_RE = re.compile(
     r"^(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(\*|[A-Za-z_][\w]*)\s*\)$",
@@ -167,6 +173,12 @@ def compile_superset_form_data(  # noqa: C901
             form_data["groupby"] = [x_axis]
 
     # R6: datasource and viz_type already set at top
+
+    # Phase 19: Safe Param Whitelist
+    # Copy allowed safe visual params from semantic_params to form_data
+    for param_name, param_value in semantic.items():
+        if param_name in SAFE_VISUAL_PARAMS and param_value is not None:
+            form_data[param_name] = param_value
 
     return form_data
 

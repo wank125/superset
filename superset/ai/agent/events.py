@@ -27,6 +27,7 @@ EventType = Literal[
     "text_chunk",
     "tool_call",
     "tool_result",
+    "tool_repair",      # Phase 20: SQL self-repair hint injected
     "sql_generated",
     "data_analyzed",
     "insight_generated",  # Phase 11: data insight text

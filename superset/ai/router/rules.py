@@ -40,30 +40,8 @@ _RULES: dict[str, dict[str, list[str]]] = {
             "overview", "全景", "汇总页", "总览",
         ],
     },
-    "copilot": {
-        "high": [
-            "有没有失败的报告", "告警", "定时任务",
-            "我有哪些权限", "我是什么角色", "report status",
-            "schedule", "saved query", "保存的查询",
-            "查询历史", "慢查询", "哪些图表", "多少个 dashboard",
-            "谁有权限", "我能看到哪些",
-        ],
-        "low": [
-            "报告", "告警状态", "权限", "角色",
-            "图表列表", "仪表板列表",
-        ],
-    },
-    "debug": {
-        "high": [
-            "报错", "sql error", "fix this sql", "修复这个 sql",
-            "column does not exist", "syntax error",
-            "帮我修复", "debug",
-        ],
-        "low": [
-            "报错了", "出错了", "error",
-        ],
-    },
-    # nl2sql is the fallback — no keyword list needed.
+    # data_assistant is the default — copilot/nl2sql keywords merged here
+    # but since data_assistant is the fallback, no explicit keywords needed.
 }
 
 # Continuation keywords: when present, reuse the previous agent.
@@ -96,7 +74,7 @@ def keyword_route(message: str) -> tuple[str, float]:
             scores[agent] = 0.60
 
     if not scores:
-        return "nl2sql", 0.0
+        return "data_assistant", 0.0
 
     best_agent = max(scores, key=lambda a: scores[a])
     return best_agent, scores[best_agent]

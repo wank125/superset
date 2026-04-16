@@ -23,10 +23,12 @@ export type AgentEventType =
   | 'text_chunk'
   | 'tool_call'
   | 'tool_result'
+  | 'tool_repair'
   | 'sql_generated'
   | 'data_analyzed'
   | 'insight_generated'
   | 'chart_created'
+  | 'chart_updated'
   | 'dashboard_created'
   | 'error_fixed'
   | 'intent_routed'
@@ -163,3 +165,25 @@ export interface AiAlertConfigResponse {
   description: string;
   database_id: number;
 }
+
+/** Shared agent mode definitions — single source of truth for UI components. */
+export const AGENT_MODES = [
+  { label: '数据助手', value: 'data_assistant' },
+  { label: 'Chart', value: 'chart' },
+  { label: 'Dashboard', value: 'dashboard' },
+  { label: 'Alert', value: 'alert' },
+] as const;
+
+export const AGENT_MODES_WITH_AUTO = [
+  { label: 'Auto', value: 'auto' },
+  { label: '数据助手', value: 'data_assistant' },
+  { label: 'Chart', value: 'chart' },
+  { label: 'Dashboard', value: 'dashboard' },
+] as const;
+
+/** Map of routed agent type to display label. */
+export const ROUTED_LABELS: Record<string, string> = {
+  data_assistant: '数据助手',
+  chart: 'Chart',
+  dashboard: 'Dashboard',
+};

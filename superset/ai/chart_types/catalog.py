@@ -49,7 +49,7 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         best_for=["分类数值对比", "排名", "时间轴柱形"],
         not_for=["占比分析", "连续趋势（用折线）"],
         params=[
-            ParamDescriptor(name="x_axis", type="string", required=True, description="X轴分类列名", conflicts_with=["groupby"]),
+            ParamDescriptor(name="x_axis", type="string", required=True, description="X轴分类列名"),
             ParamDescriptor(name="metrics", type="metric_array", required=True, description="数值指标列表"),
             ParamDescriptor(name="groupby", type="string_array", required=False, description="分组列（堆叠系列）", default=[]),
         ],
@@ -151,6 +151,10 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         uses_metric_singular=True,
         requires_time_column=False,
         max_groupby_dimensions=1,
+        advanced_params_schema={
+            "innerRadius": {"type": "number", "range": [0.1, 0.8], "default": 0, "description": "环形图内圆半径比（0=实心饼图）"},
+            "show_legend": {"type": "boolean", "default": True},
+        },
     ),
     "funnel": ChartTypeDescriptor(
         viz_type="funnel",

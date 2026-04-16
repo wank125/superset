@@ -82,13 +82,13 @@ class IntentRouter:
 
         if llm_reason.startswith("fallback"):
             logger.info(
-                "router: llm classifier fallback, defaulting to nl2sql. "
+                "router: llm classifier fallback, defaulting to data_assistant. "
                 "message=%s reason=%s",
                 message[:100],
                 llm_reason,
             )
             return RouteDecision(
-                agent="nl2sql",
+                agent="data_assistant",
                 confidence=llm_confidence,
                 method="fallback",
                 reason=llm_reason,
@@ -104,13 +104,13 @@ class IntentRouter:
 
         # Fallback — safe default.
         logger.info(
-            "router: low confidence (%.2f), fallback to nl2sql. message=%s",
+            "router: low confidence (%.2f), fallback to data_assistant. message=%s",
             llm_confidence,
             message[:100],
         )
         return RouteDecision(
-            agent="nl2sql",
+            agent="data_assistant",
             confidence=0.5,
             method="fallback",
-            reason="Low confidence, defaulting to nl2sql",
+            reason="Low confidence, defaulting to data_assistant",
         )

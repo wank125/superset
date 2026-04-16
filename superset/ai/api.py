@@ -97,13 +97,14 @@ class AiAgentRestApi(BaseSupersetApi):
         if errors:
             return self.response_400(message=str(errors))
 
-        # Enforce per-agent feature flags (auto/nl2sql need no extra flag)
+        # Enforce per-agent feature flags (data_assistant/nl2sql need no extra flag)
         agent_type = body.get("agent_type", "auto")
+        # Map legacy types to unified data_assistant
+        if agent_type in ("nl2sql", "copilot", "debug"):
+            agent_type = "data_assistant"
         _GATED_AGENTS: dict[str, str] = {
             "chart": "AI_AGENT_CHART",
-            "debug": "AI_AGENT_DEBUG",
             "dashboard": "AI_AGENT_DASHBOARD",
-            "copilot": "AI_AGENT_COPILOT",
         }
         if agent_type in _GATED_AGENTS:
             flag = _GATED_AGENTS[agent_type]
@@ -112,20 +113,23 @@ class AiAgentRestApi(BaseSupersetApi):
                     message=f"{agent_type} agent is not enabled. Enable {flag} feature flag."
                 )
 
-        # database_id is required unless the user explicitly chose copilot
-        if agent_type != "copilot" and not body.get("database_id"):
-            return self.response_400(
-                message="database_id is required for non-copilot agents."
-            )
-
         import uuid
+
+        # Cap message length to prevent LLM token-budget abuse
+        message = body["message"][:2000]
+        if len(body["message"]) > 2000:
+            logger.info(
+                "Message truncated from %d to 2000 chars for session %s",
+                len(body["message"]),
+                body.get("session_id"),
+            )
 
         channel_id = uuid.uuid4().hex
         run_agent_task.delay(
             {
                 "channel_id": channel_id,
                 "user_id": g.user.id if g.user else None,
-                "message": body["message"],
+                "message": message,
                 "database_id": body.get("database_id"),
                 "schema_name": body.get("schema_name"),
                 "agent_type": agent_type,

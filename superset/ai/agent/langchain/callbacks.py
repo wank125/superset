@@ -39,8 +39,11 @@ class SafeguardCallbackHandler(BaseCallbackHandler):
     """
 
     _MAX_STREAM_CHARS = 10_000
-    _MAX_REPETITIONS = 8
-    _TAIL_LEN = 30
+    # Tuned from (8, 30) → (15, 50): tool-call JSON tokens inflated the
+    # repetition detector (now filtered in on_llm_new_token), so the
+    # natural-language repetition threshold can be more permissive.
+    _MAX_REPETITIONS = 15
+    _TAIL_LEN = 50
 
     def __init__(self) -> None:
         self._turn_chars = 0
@@ -61,6 +64,13 @@ class SafeguardCallbackHandler(BaseCallbackHandler):
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         """Check per-token safety limits."""
         if self._stopped:
+            return
+
+        # Skip tool-call structure tokens — only monitor natural-language
+        # content.  LangGraph streams tool-call JSON through this callback,
+        # which inflates the repetition detector with structural artifacts.
+        chunk = kwargs.get("chunk")
+        if chunk and hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
             return
 
         self._turn_chars += len(token)

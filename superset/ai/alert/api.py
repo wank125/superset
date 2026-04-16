@@ -199,23 +199,32 @@ def _get_database_schema(
         if not database:
             return ""
 
-        tables = database.get_tables(schema=schema_name) or []
-        if not tables:
-            # Fallback: try all tables
-            tables = database.get_all_table_names_in_database(
-                schema=schema_name,
-            )[:20] if hasattr(database, "get_all_table_names_in_database") else []
+        # Get table names via Superset Database API
+        try:
+            table_names = database.get_all_table_names_in_schema(
+                catalog=None, schema=schema_name,
+            )
+            # Table name may be a NamedTuple (catalog, schema, table)
+            table_strs = [_extract_table_name(t) for t in table_names]
+        except Exception:
+            table_strs = []
+
+        if not table_strs:
+            return ""
 
         lines: list[str] = []
-        for table in tables[:20]:
-            table_name = _extract_table_name(table)
+        for table_name in table_strs[:20]:
             lines.append(f"  Table: {table_name}")
             # Add column info for richer LLM context
             try:
-                cols = database.get_columns(table_name, schema=schema_name) or []
+                from superset.sql.parse import Table as SqlTable
+
+                cols = database.get_columns(
+                    SqlTable(table=table_name, schema=schema_name),
+                ) or []
                 for col in cols[:15]:
                     col_name = col.get("name", "?")
-                    col_type = col.get("type", "").split("(")[0]  # strip length
+                    col_type = str(col.get("type", "")).split("(")[0]
                     lines.append(f"    {col_name} ({col_type})")
             except Exception:
                 pass  # column introspection failure is non-fatal

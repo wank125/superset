@@ -19,9 +19,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+
+import httpx
+from langgraph.errors import GraphRecursionError
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langgraph.prebuilt import create_react_agent
@@ -61,6 +65,7 @@ from superset.ai.tools.report_status import ReportStatusTool
 from superset.ai.tools.saved_query import SavedQueryTool
 from superset.ai.tools.search_datasets import SearchDatasetsTool
 from superset.ai.tools.whoami import WhoAmITool
+from superset.ai.tools.embed_dashboard import EmbedDashboardTool
 
 
 @contextmanager
@@ -71,22 +76,50 @@ def _nullcontext() -> Iterator[None]:
 
 logger = logging.getLogger(__name__)
 
+# Transient errors worth retrying (LLM API connection issues)
+_RETRYABLE_ERRORS: tuple[type[Exception], ...] = (
+    httpx.RemoteProtocolError,
+    httpx.ReadTimeout,
+    httpx.ConnectTimeout,
+    ConnectionError,
+    TimeoutError,
+)
+
 # Map agent_type strings to their BaseTool classes and constructor kwargs
+# Unified data assistant tools — merged from nl2sql + copilot
+_DATA_ASSISTANT_TOOLS: list[tuple[type[BaseTool], list[str]]] = [
+    # Database query tools
+    (GetSchemaTool, ["database_id", "default_schema"]),
+    (ExecuteSqlTool, ["database_id"]),
+    (SearchDatasetsTool, ["database_id", "schema_name"]),
+    # Superset asset tools
+    (ListDatabasesTool, []),
+    (GetDatasetDetailTool, []),
+    (ListChartsTool, []),
+    (ListDashboardsTool, []),
+    (GetChartDetailTool, []),
+    (GetDashboardDetailTool, []),
+    # User & platform tools
+    (WhoAmITool, []),
+    (QueryHistoryTool, []),
+    (SavedQueryTool, []),
+    (ReportStatusTool, []),
+    (EmbedDashboardTool, []),
+]
+
 _TOOL_MAP: dict[str, list[tuple[type[BaseTool], list[str]]]] = {
-    "nl2sql": [
-        (GetSchemaTool, ["database_id", "default_schema"]),
-        (ExecuteSqlTool, ["database_id"]),
-    ],
+    # Unified data assistant (replaces nl2sql + copilot)
+    "data_assistant": _DATA_ASSISTANT_TOOLS,
+    "nl2sql": _DATA_ASSISTANT_TOOLS,
+    "copilot": _DATA_ASSISTANT_TOOLS,
+    "debug": _DATA_ASSISTANT_TOOLS,
+    # Chart/dashboard use StateGraph pipeline, these are only for LangChain fallback
     "chart": [
         (GetSchemaTool, ["database_id", "default_schema"]),
         (ExecuteSqlTool, ["database_id"]),
         (AnalyzeDataTool, ["database_id"]),
         (SearchDatasetsTool, ["database_id", "schema_name"]),
         (CreateChartTool, []),
-    ],
-    "debug": [
-        (GetSchemaTool, ["database_id", "default_schema"]),
-        (ExecuteSqlTool, ["database_id"]),
     ],
     "dashboard": [
         (GetSchemaTool, ["database_id", "default_schema"]),
@@ -96,21 +129,6 @@ _TOOL_MAP: dict[str, list[tuple[type[BaseTool], list[str]]]] = {
         (CreateChartTool, []),
         (CreateDashboardTool, []),
     ],
-    "copilot": [
-        (ListDatabasesTool, []),
-        (GetDatasetDetailTool, []),
-        (ListChartsTool, []),
-        (ListDashboardsTool, []),
-        (WhoAmITool, []),
-        (GetChartDetailTool, []),
-        (GetDashboardDetailTool, []),
-        (QueryHistoryTool, []),
-        (SavedQueryTool, []),
-        (ReportStatusTool, []),
-        (GetSchemaTool, ["database_id", "default_schema"]),
-        (ExecuteSqlTool, ["database_id"]),
-        (SearchDatasetsTool, ["database_id", "schema_name"]),
-    ],
 }
 
 
@@ -118,8 +136,27 @@ def _instantiate_tools(
     agent_type: str,
     database_id: int | None,
     schema_name: str | None,
-) -> list[BaseTool]:
-    """Create BaseTool instances for the given agent type."""
+) -> tuple[list[BaseTool], int | None]:
+    """Create BaseTool instances for the given agent type.
+
+    Returns (tools, effective_database_id).  When database_id is None,
+    auto-selects if only one database exists.
+    """
+    # Auto-select database when not provided
+    if database_id is None and any(
+        "database_id" in keys for _, keys in _TOOL_MAP.get(agent_type, [])
+    ):
+        from superset.daos.database import DatabaseDAO
+
+        databases = DatabaseDAO.find_all()
+        if len(databases) == 1:
+            database_id = databases[0].id
+            logger.info("auto_selected_database id=%d", database_id)
+        elif not databases:
+            logger.warning("no databases available for agent %s", agent_type)
+            return [], None
+        # Multiple databases: tools requiring database_id are skipped below
+
     tool_specs = _TOOL_MAP.get(agent_type, _TOOL_MAP["nl2sql"])
     tools: list[BaseTool] = []
     for tool_cls, kwargs_keys in tool_specs:
@@ -134,7 +171,7 @@ def _instantiate_tools(
         if "schema_name" in kwargs_keys:
             kwargs["schema_name"] = schema_name
         tools.append(tool_cls(**kwargs))
-    return tools
+    return tools, database_id
 
 
 class LangChainAgentRunner(AgentRunner):
@@ -159,12 +196,13 @@ class LangChainAgentRunner(AgentRunner):
         self._session_id = session_id
         self._tool_guard = ToolCallRepetitionGuard(
             max_consecutive=3,
-            tracked_tools={"create_chart", "create_dashboard"},
+            tracked_tools={"create_chart", "create_dashboard", "execute_sql"},
         )
         self._order_guard: ToolOrderGuard | None = create_order_guard(
             agent_type
         )
         self._content_parts: list[str] = []
+        self._sql_error_count: int = 0
 
     def run(self, message: str) -> Iterator[AgentEvent]:
         """Execute the agent and yield AgentEvent instances."""
@@ -172,6 +210,7 @@ class LangChainAgentRunner(AgentRunner):
 
         self._tool_guard.reset()
         self._content_parts = []
+        self._sql_error_count = 0
         if self._order_guard is not None:
             self._order_guard.reset()
 
@@ -187,9 +226,18 @@ class LangChainAgentRunner(AgentRunner):
     def _run_inner(self, message: str) -> Iterator[AgentEvent]:
         """Inner execution logic, called inside the override_user context."""
         llm = get_langchain_llm()
-        native_tools = _instantiate_tools(
+        native_tools, effective_db = _instantiate_tools(
             self._agent_type, self._database_id, self._schema_name
         )
+
+        if not native_tools:
+            yield AgentEvent(
+                type="text_chunk",
+                data={"content": "没有可用的数据库连接，请先选择一个数据库。"},
+            )
+            yield AgentEvent(type="done", data={})
+            return
+
         confirmed = is_creation_confirmed(message)
         lc_tools = [
             tool_adapter(
@@ -216,48 +264,130 @@ class LangChainAgentRunner(AgentRunner):
             "recursion_limit": get_max_turns(),
         }
 
-        # Persist user message to shared Redis key
-        memory.add_user_message(message)
-
+        # Persist user message to shared Redis key (best-effort)
         try:
-            # stream_mode=["messages", "updates"]:
-            #   "messages" → (AIMessageChunk, metadata) for text tokens
-            #   "updates"  → complete tool call/result snapshots
-            # NL2SQL needs a small amount of history for references like
-            # "this table", but should not see the full conversation because
-            # local models may reuse historical answers instead of calling
-            # tools. Keep only recent context and rely on the prompt to force
-            # fresh schema/query validation every turn.
-            history_limit = 5 if self._agent_type == "nl2sql" else None
-            for mode, chunk in agent.stream(
-                {
-                    "messages": memory.get_messages(
-                        include_history=True,
-                        max_messages=history_limit,
-                    )
-                },
-                config=config,
-                stream_mode=["messages", "updates"],
-            ):
-                for event in self._translate_event(mode, chunk):
-                    yield event
+            memory.add_user_message(message)
+        except Exception:
+            logger.warning("Failed to persist user message to Redis", exc_info=True)
 
-            if callback.stopped:
-                yield AgentEvent(
-                    type="error",
-                    data={"message": "Response stopped by safety guard."},
+        # Collect SQL tool results for post-execution consistency check
+        self._sql_results: list[str] = []
+
+        # Retry loop for transient LLM API failures (connection drops, timeouts).
+        # Events are buffered per-attempt so that a transient error discards
+        # partial results instead of sending duplicate events to the SSE stream.
+        max_retries = 2
+        last_exc: Exception | None = None
+        buffered_events: list[AgentEvent] = []
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Reset per-attempt state
+                self._content_parts = []
+                self._sql_results = []
+                self._sql_error_count = 0
+                buffered_events = []
+                callback._turn_chars = 0
+                callback._turn_text = ""
+                callback._stopped = False
+
+                # stream_mode=["messages", "updates"]:
+                #   "messages" → (AIMessageChunk, metadata) for text tokens
+                #   "updates"  → complete tool call/result snapshots
+                # data_assistant/nl2sql/copilot need some history for references
+                # like "this table", but should not see the full conversation
+                # because local models may reuse historical answers instead of
+                # calling tools.  Keep recent context (20 messages ≈ 10 rounds)
+                # and rely on the prompt to force fresh SQL execution every turn.
+                # chart/dashboard use StateGraph (no limit) or full history for
+                # multi-step reasoning.
+                _LIMITED_TYPES = {"data_assistant", "nl2sql", "copilot", "debug"}
+                history_limit = 20 if self._agent_type in _LIMITED_TYPES else None
+                for mode, chunk in agent.stream(
+                    {
+                        "messages": memory.get_messages(
+                            include_history=True,
+                            max_messages=history_limit,
+                        )
+                    },
+                    config=config,
+                    stream_mode=["messages", "updates"],
+                ):
+                    for event in self._translate_event(mode, chunk):
+                        buffered_events.append(event)
+
+                if callback.stopped:
+                    buffered_events.append(AgentEvent(
+                        type="error",
+                        data={"message": "回复内容超出安全限制，已自动截断。"},
+                    ))
+                last_exc = None
+                break  # success — exit retry loop
+
+            except _RETRYABLE_ERRORS as exc:
+                last_exc = exc
+                # Discard partial events from failed attempt
+                logger.warning(
+                    "LLM API transient error (attempt %d/%d): %s — "
+                    "discarding %d partial events",
+                    attempt, max_retries, exc, len(buffered_events),
                 )
-        except Exception as exc:
-            logger.exception("LangChain agent execution failed")
+                buffered_events = []
+                continue
+
+            except GraphRecursionError:
+                logger.warning(
+                    "Agent hit recursion_limit=%d, returning partial result",
+                    get_max_turns(),
+                )
+                buffered_events.append(AgentEvent(
+                    type="warning",
+                    data={"message": "问题较复杂，已用完处理步数。请尝试简化问题或分步提问。"},
+                ))
+                last_exc = None  # handled
+                break
+
+            except Exception as exc:
+                logger.exception("LangChain agent execution failed")
+                buffered_events.append(AgentEvent(
+                    type="error",
+                    data={"message": f"处理出错：{format_user_facing_error(exc)}"},
+                ))
+                last_exc = None  # non-retryable, already handled
+                break
+
+        # Emit retry warning before successful events so user sees context
+        if last_exc is not None:
+            logger.error(
+                "LLM API failed after %d retries: %s", max_retries, last_exc,
+            )
             yield AgentEvent(
                 type="error",
-                data={"message": format_user_facing_error(exc)},
+                data={"message": "AI 服务暂时不可用，请稍后重试。"},
             )
+        else:
+            # Yield buffered events from the successful (or partial) attempt
+            yield from buffered_events
 
-        # Persist assistant response to shared Redis key
+        # Persist assistant response to shared Redis key.
+        # Guard against Redis failures — a lost message is acceptable,
+        # but an exception here would prevent the done event from being
+        # emitted, leaving the client hanging.
         full_response = "".join(self._content_parts)
         if full_response:
-            memory.add_ai_message(full_response)
+            try:
+                memory.add_ai_message(full_response)
+            except Exception:
+                logger.warning(
+                    "Failed to persist assistant response to Redis",
+                    exc_info=True,
+                )
+
+        # Post-execution: cross-check numeric claims against SQL results
+        if self._sql_results and full_response:
+            warning = _check_response_consistency(full_response, self._sql_results)
+            if warning:
+                yield AgentEvent(type="warning", data={"message": warning})
 
         yield AgentEvent(type="done", data={})
 
@@ -306,6 +436,9 @@ class LangChainAgentRunner(AgentRunner):
             if self._order_guard is not None and tool_name:
                 self._order_guard.advance(tool_name)
             result = msg.content
+            # Collect execute_sql results for consistency check
+            if tool_name == "execute_sql" and result:
+                self._sql_results.append(str(result))
             yield AgentEvent(
                 type="tool_result",
                 data={
@@ -317,12 +450,29 @@ class LangChainAgentRunner(AgentRunner):
                 yield AgentEvent(
                     type="error",
                     data={
-                        "message": (
-                            "Database connection pool is exhausted. "
-                            "Please retry after the worker releases connections."
-                        ),
+                        "message": "数据库连接池已耗尽，请稍后重试。",
                     },
                 )
+
+            # Self-repair: detect SQL errors and inject a repair hint
+            # so the LLM can self-correct in the next ReAct step.
+            if (
+                tool_name == "execute_sql"
+                and isinstance(result, str)
+                and _is_sql_error(result)
+                and self._sql_error_count < 3
+            ):
+                self._sql_error_count += 1
+                hint = _build_sql_repair_hint(result, self._sql_error_count)
+                if hint:
+                    yield AgentEvent(
+                        type="tool_repair",
+                        data={
+                            "tool": tool_name,
+                            "attempt": self._sql_error_count,
+                            "hint": hint,
+                        },
+                    )
 
     def _handle_updates(self, chunk: Any) -> Iterator[AgentEvent]:
         """Handle 'updates' stream mode — complete node outputs."""
@@ -335,18 +485,15 @@ class LangChainAgentRunner(AgentRunner):
             messages = agent_update.get("messages", [])
             for msg in messages:
                 if isinstance(msg, AIMessage) and msg.tool_calls:
-                    # Single-tool forcing: if model returned multiple
-                    # tool calls (ignoring parallel_tool_calls=False),
-                    # only process the first one.
                     if len(msg.tool_calls) > 1:
-                        logger.warning(
-                            "Model returned %d tool_calls; only "
-                            "executing first: %s",
+                        names = [tc.get("name", "?") for tc in msg.tool_calls]
+                        logger.info(
+                            "Model returned %d parallel tool_calls: %s",
                             len(msg.tool_calls),
-                            msg.tool_calls[0]["name"],
+                            names,
                         )
 
-                    for tool_call in msg.tool_calls[:1]:
+                    for tool_call in msg.tool_calls:
                         tool_name = tool_call.get("name")
                         args = tool_call.get("args") or {}
                         if not tool_name:
@@ -363,8 +510,7 @@ class LangChainAgentRunner(AgentRunner):
                                 type="error",
                                 data={
                                     "message": (
-                                        f"Tool '{tool_name}' repeated too "
-                                        f"many times, skipping."
+                                        f"工具 '{tool_name}' 重复调用过多，已跳过。"
                                     ),
                                 },
                             )
@@ -383,9 +529,140 @@ class LangChainAgentRunner(AgentRunner):
                                 type="sql_generated",
                                 data={"sql": args["sql"]},
                             )
+                elif isinstance(msg, AIMessage) and msg.content:
+                    # Final text response (no tool_calls) — local LLMs
+                    # may deliver the answer here instead of streaming
+                    # tokens via AIMessageChunk.
+                    self._content_parts.append(msg.content)
+                    yield AgentEvent(
+                        type="text_chunk",
+                        data={"content": msg.content},
+                    )
 
 
 def _is_connection_pool_error(content: Any) -> bool:
     """Return whether a tool result indicates DB connection pool exhaustion."""
     text = str(content)
     return "QueuePool limit" in text and "connection timed out" in text
+
+
+# Patterns that indicate a recoverable SQL error (not a permission or
+# mutation-rejection error, which the LLM cannot fix by rewriting SQL).
+_SQL_ERROR_PATTERNS: list[tuple[str, str]] = [
+    # (regex, error_category)
+    (r"SQL Error|Error executing SQL|Could not parse SQL", "sql_execution"),
+    (r"no such column|column .* does not exist|unknown column", "bad_column"),
+    (r"no such table|relation .* does not exist|table .* not found", "bad_table"),
+    (r"syntax error|Unexpected.*token", "syntax"),
+    (r"division by zero", "logic"),
+    (r"grouping error|not a GROUP BY expression|must appear in the GROUP BY", "group_by"),
+    (r"aggregate functions? are not allowed", "aggregate"),
+    (r"function .* does not exist|No matching function", "bad_function"),
+]
+
+# Non-recoverable errors — the LLM should not retry these.
+_NON_RECOVERABLE_PATTERNS: list[str] = [
+    r"Only SELECT queries are allowed",
+    r"Access denied",
+    r"No SQL provided",
+]
+
+
+def _is_sql_error(result: str) -> bool:
+    """Return True if the execute_sql result is a recoverable SQL error."""
+    if not (result.startswith("Error") or result.startswith("SQL Error")):
+        return False
+    for pattern in _NON_RECOVERABLE_PATTERNS:
+        if re.search(pattern, result, re.IGNORECASE):
+            return False
+    for pattern, _ in _SQL_ERROR_PATTERNS:
+        if re.search(pattern, result, re.IGNORECASE):
+            return True
+    # Generic "Error executing SQL" — treat as recoverable
+    return "Error executing SQL" in result
+
+
+def _build_sql_repair_hint(error_msg: str, attempt: int) -> str | None:
+    """Build a concise repair hint for the LLM based on the SQL error.
+
+    The hint is intentionally short so it guides the LLM without consuming
+    too much context.  Returns None if no actionable hint can be derived.
+    """
+    parts: list[str] = []
+
+    # Categorise the error
+    for pattern, category in _SQL_ERROR_PATTERNS:
+        if re.search(pattern, error_msg, re.IGNORECASE):
+            if category == "bad_column":
+                parts.append(
+                    "列名可能不正确。请先使用 get_schema 工具查看表结构，"
+                    "确认可用列名后再重写 SQL。"
+                )
+            elif category == "bad_table":
+                parts.append(
+                    "表名可能不正确。请先使用 search_datasets 或 get_schema "
+                    "工具查看可用的表。"
+                )
+            elif category == "syntax":
+                parts.append(
+                    "SQL 语法有误。请检查关键字拼写、引号匹配和子查询结构。"
+                )
+            elif category == "group_by":
+                parts.append(
+                    "GROUP BY 错误。SELECT 中的非聚合列必须出现在 GROUP BY 中。"
+                )
+            elif category == "bad_function":
+                parts.append(
+                    "函数不存在。请使用 get_schema 确认可用的数据库函数。"
+                )
+            elif category in ("logic", "aggregate"):
+                parts.append("请检查查询逻辑并修正。")
+            break
+
+    # Extract the Suggestion line from extract_errors output
+    suggestion_match = re.search(r"Suggestion:\s*(.+)", error_msg)
+    if suggestion_match:
+        parts.append(f"数据库建议: {suggestion_match.group(1)}")
+
+    if not parts:
+        return None
+
+    prefix = f"[SQL 自修复 {attempt}/3]"
+    return f"{prefix} {' '.join(parts)}"
+
+
+def _check_response_consistency(
+    response: str,
+    sql_results: list[str],
+) -> str | None:
+    """Cross-check numeric claims in the LLM response against SQL results.
+
+    Returns a warning string if the response contains numbers that don't
+    appear in any SQL result.  Returns None if everything looks consistent.
+    """
+    # Extract all integers >= 2 from the LLM's final response
+    response_numbers = set(int(m) for m in re.findall(r"\b(\d+)\b", response) if int(m) >= 2)
+
+    # Extract all numbers from SQL results (including table cells)
+    sql_numbers: set[int] = set()
+    for result in sql_results:
+        for m in re.findall(r"\b(\d+)\b", result):
+            num = int(m)
+            if num >= 2:
+                sql_numbers.add(num)
+
+    if not response_numbers or not sql_numbers:
+        return None
+
+    # Find numbers in the response that don't appear in any SQL result
+    # Allow small tolerance: skip if SQL has many numbers (large result set)
+    # since the LLM may be summarizing/computing derived values
+    if len(sql_numbers) > 20:
+        return None
+
+    unmatched = response_numbers - sql_numbers
+    if unmatched and len(unmatched) <= 3:
+        nums = ", ".join(str(n) for n in sorted(unmatched))
+        return f"回答中的数字 ({nums}) 未在查询结果中找到，请以查询结果为准。"
+
+    return None

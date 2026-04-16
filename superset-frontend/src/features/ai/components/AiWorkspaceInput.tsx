@@ -23,22 +23,7 @@ import { Input } from '@superset-ui/core/components';
 import { Button } from '@superset-ui/core/components/Button';
 import { Icons } from '@superset-ui/core/components/Icons';
 import { Radio, RadioChangeEvent } from '@superset-ui/core/components/Radio';
-
-const AGENT_MODES = [
-  { label: 'Auto', value: 'auto' },
-  { label: 'SQL', value: 'nl2sql' },
-  { label: 'Chart', value: 'chart' },
-  { label: 'Dashboard', value: 'dashboard' },
-  { label: 'Copilot', value: 'copilot' },
-];
-
-const ROUTED_LABELS: Record<string, string> = {
-  nl2sql: 'SQL',
-  chart: 'Chart',
-  dashboard: 'Dashboard',
-  copilot: 'Copilot',
-  debug: 'Debug',
-};
+import { AGENT_MODES_WITH_AUTO, ROUTED_LABELS } from '../types';
 
 interface AiWorkspaceInputProps {
   onSend: (message: string) => void;
@@ -161,9 +146,7 @@ export function AiWorkspaceInput({
       ? t('描述你想创建的仪表板...')
       : agentType === 'chart'
         ? t('描述你想创建的图表...')
-        : agentType === 'copilot'
-          ? t('问我关于 Superset 资产的任何问题...')
-          : t('输入你的问题...');
+        : t('输入你的问题...');
 
   return (
     <InputBar>
@@ -188,7 +171,7 @@ export function AiWorkspaceInput({
               optionType="button"
               buttonStyle="solid"
               size="small"
-              options={AGENT_MODES}
+              options={AGENT_MODES_WITH_AUTO}
               value={agentType}
               onChange={(e: RadioChangeEvent) =>
                 onAgentTypeChange(e.target.value)

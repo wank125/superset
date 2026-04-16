@@ -53,7 +53,7 @@ function appendSqlResult(content: string, sqlResult: string | null): string {
 
 export function useAiChat(
   databaseId: number | null,
-  agentType: string = 'nl2sql',
+  agentType: string = 'data_assistant',
   sessionId?: string,
   initialMessages: AiChatMessage[] = [],
 ) {
@@ -346,7 +346,7 @@ export function useAiChat(
                 break;
               }
               case 'intent_routed': {
-                const routed = (event.data.agent as string) || 'nl2sql';
+                const routed = (event.data.agent as string) || 'data_assistant';
                 setRoutedAgent(routed);
                 addStep(`自动路由: ${routed}`, 'done', 'intent_routed');
                 break;
@@ -408,6 +408,19 @@ export function useAiChat(
               case 'error_fixed': {
                 const msg = (event.data.message as string) || '';
                 addStep(msg, 'done', 'error_fixed');
+                break;
+              }
+              case 'tool_repair': {
+                const hint = (event.data.hint as string) || '';
+                const toolName = (event.data.tool as string) || '';
+                const attemptNum = event.data.attempt as number;
+                if (hint) {
+                  addStep(
+                    `自修复 ${toolName} (${attemptNum}/3): ${hint}`,
+                    'running',
+                    'error_fixed',
+                  );
+                }
                 break;
               }
               case 'text_chunk': {

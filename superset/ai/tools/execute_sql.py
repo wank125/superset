@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from superset.ai.tools.base import BaseTool
@@ -82,6 +83,11 @@ class ExecuteSqlTool(BaseTool):
             try:
                 script = SQLScript(sql, engine="sqlite")
             except Exception as exc:
+                logger.warning(
+                    "SQLScript parse failed for SQL (backend=%s): %s",
+                    database.backend,
+                    sql[:200],
+                )
                 return f"Error: Could not parse SQL: {exc}"
 
         if script.has_mutation():
@@ -90,6 +96,15 @@ class ExecuteSqlTool(BaseTool):
                 "DDL/DML statements (INSERT, UPDATE, DELETE, DROP, ALTER, etc.) "
                 "are prohibited."
             )
+
+        # Ensure LIMIT clause to prevent unbounded queries
+        sql_upper = sql.upper()
+        if "LIMIT" not in sql_upper:
+            sql += " LIMIT 100"
+        else:
+            limit_match = re.search(r"LIMIT\s+(\d+)", sql, re.IGNORECASE)
+            if limit_match and int(limit_match.group(1)) > 500:
+                sql = re.sub(r"LIMIT\s+\d+", "LIMIT 500", sql, flags=re.IGNORECASE)
 
         try:
             # Execute the query

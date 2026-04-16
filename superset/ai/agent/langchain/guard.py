@@ -33,6 +33,10 @@ class ToolCallRepetitionGuard:
     than *max_consecutive* times, returns True to signal that a correction
     should be injected.
 
+    For ``execute_sql``, uses SQL-aware normalisation (whitespace and
+    case folding) so that trivially reformatted queries are treated as
+    duplicates.
+
     This guard operates at the runner's event translation layer — it
     observes tool_call events, not LLM tokens, so it catches loops
     that SafeguardCallbackHandler (token-level) cannot.
@@ -68,6 +72,15 @@ class ToolCallRepetitionGuard:
         """Return a stable representation for tool-call arguments."""
         if not arguments:
             return "{}"
+
+        # SQL-aware normalisation: fold whitespace and case so that
+        # "SELECT  id  FROM  t" and "select id from t" match.
+        sql = arguments.get("sql", "")
+        if sql:
+            import re as _re
+
+            normalised_sql = _re.sub(r"\s+", " ", sql.strip()).lower()
+            arguments = {**arguments, "sql": normalised_sql}
 
         try:
             return json.dumps(arguments, sort_keys=True, default=str)

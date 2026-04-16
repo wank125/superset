@@ -51,15 +51,47 @@ class LangChainMemoryAdapter:
         include_history: bool = True,
         max_messages: int | None = None,
     ) -> list[BaseMessage]:
-        """Load history from Redis and convert to LangChain messages."""
+        """Load history from Redis and convert to LangChain messages.
+
+        Applies context-window-aware trimming:
+        - Recent N messages are kept intact (configurable via max_messages)
+        - ``tool_summary`` entries are always preserved and injected as
+          system messages with a descriptive prefix
+        - ``router_meta`` entries are excluded (metadata, not LLM context)
+        """
         history = self._ctx.get_history()
+
+        # Separate tool_summaries from conversation messages so they are
+        # never trimmed away.  router_meta is excluded entirely.
+        tool_summaries = [
+            e for e in history if e.get("role") == "tool_summary"
+        ]
+
         if not include_history:
-            history = history[-1:]
+            # Only the most recent user message
+            conv = [e for e in history if e.get("role") == "user"][-1:]
         elif max_messages is not None:
-            history = history[-max_messages:]
+            conv = history[-max_messages:]
+        else:
+            conv = history
 
         messages: list[BaseMessage] = []
-        for entry in history:
+
+        # Inject tool summaries as system context at the beginning
+        if tool_summaries:
+            summary_parts: list[str] = []
+            for ts in tool_summaries:
+                tool = ts.get("tool", "")
+                content = ts.get("content", "")
+                if content:
+                    summary_parts.append(f"[{tool}] {content}")
+            if summary_parts:
+                messages.append(SystemMessage(
+                    content="之前执行的工具记录（供参考）:\n"
+                    + "\n".join(summary_parts)
+                ))
+
+        for entry in conv:
             role = entry.get("role", "")
             content = entry.get("content", "")
             if role == "user":
@@ -70,6 +102,7 @@ class LangChainMemoryAdapter:
                 messages.append(SystemMessage(content=content))
             elif role == "tool":
                 messages.append(ToolMessage(content=content, tool_call_id=""))
+            # tool_summary and router_meta are handled above / excluded
         return messages
 
     def add_user_message(self, content: str) -> None:
