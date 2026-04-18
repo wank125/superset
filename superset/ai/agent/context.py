@@ -23,12 +23,17 @@ import logging
 from typing import Any
 
 from superset import cache_manager
+from superset.ai.agent.structured_context import (
+    ContextKind,
+    dump_context,
+    StructuredContext,
+)
 from superset.ai.config import get_max_context_rounds
 
 logger = logging.getLogger(__name__)
 
 _CONTEXT_TTL = 3600  # 1 hour
-_MAX_TOOL_SUMMARIES = 5
+_MAX_TOOL_SUMMARIES = 8
 
 
 class ConversationContext:
@@ -135,3 +140,11 @@ class ConversationContext:
         self._cache().set(
             self._key, json.dumps(history), timeout=_CONTEXT_TTL,
         )
+
+    def add_structured_context(
+        self,
+        kind: ContextKind,
+        context: StructuredContext,
+    ) -> None:
+        """Record a versioned structured context payload."""
+        self.add_tool_summary(kind, dump_context({**context, "kind": kind}))

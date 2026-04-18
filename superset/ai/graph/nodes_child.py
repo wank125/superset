@@ -503,6 +503,9 @@ def analyze_result(
     columns, rows = AnalyzeDataTool._parse_text_table(raw_str)
     col_analysis = AnalyzeDataTool._analyze_columns(columns, rows)
 
+    # Phase 1: compute statistics
+    col_stats = AnalyzeDataTool._compute_statistics(columns, rows, col_analysis)
+
     row_count = len(rows)
     datetime_col = next(
         (
@@ -543,6 +546,23 @@ def analyze_result(
         "good_for_table": True,
     }
 
+    # Phase 3: trend detection
+    trend: dict[str, Any] | None = None
+    if flags["good_for_trend"] and datetime_col and numeric_cols:
+        num_idx = columns.index(numeric_cols[0]) if numeric_cols[0] in columns else -1
+        if num_idx >= 0:
+            num_vals: list[float] = []
+            for row in rows:
+                try:
+                    num_vals.append(
+                        float(row[num_idx].replace(",", ""))
+                        if row[num_idx] and row[num_idx] != "NULL"
+                        else 0.0
+                    )
+                except (ValueError, IndexError):
+                    num_vals.append(0.0)
+            trend = AnalyzeDataTool._detect_trend(num_vals)
+
     summary: ResultSummary = {
         "row_count": row_count,
         "columns": col_analysis,
@@ -554,65 +574,27 @@ def analyze_result(
         "low_cardinality_cols": low_card_cols,
         "suitability_flags": flags,
         "insight": None,
+        "col_stats": col_stats,
+        "trend": trend,
     }
 
     # Phase 11: generate one-line insight via LLM (best-effort, non-blocking)
     statistics: dict[str, str] = {}
     if row_count > 0 and numeric_cols:
         try:
-            from superset.ai.graph.llm_helpers import _get_llm_response
+            from superset.ai.insight import generate_llm_insight
 
-            sample_rows = rows[:3] if rows else []
-            is_kpi = row_count == 1 and len(numeric_cols) == 1
-
-            if is_kpi:
-                # For KPI results, ask LLM for insight + comparison statistics
-                insight_prompt = (
-                    f"这是查询结果（单行KPI数据）:\n"
-                    f"  数据行: {sample_rows}\n"
-                    f"  指标列: {numeric_cols}\n"
-                    f"  维度列: {string_cols}\n"
-                    f"  时间列: {datetime_col}\n\n"
-                    f"请输出合法JSON，格式如下：\n"
-                    f'{{"insight": "一句话洞察(30字内)", '
-                    f'"statistics": {{"环比": "+X.X%", "同比": "+X.X%"}}}}\n\n'
-                    f"注意：\n"
-                    f"- insight 是一句话关键发现\n"
-                    f"- statistics 是推测性的环比/同比变化，如果没有时间列则设为空对象\n"
-                    f"- 如果数据不足以判断，statistics 置为空对象 {{}}\n"
-                    f"输出 ONLY JSON，无其他内容。"
-                )
-            else:
-                insight_prompt = (
-                    f"Based on these data characteristics, write ONE sentence "
-                    f"(max 30 chars in Chinese) describing the key finding:\n"
-                    f"  row_count: {row_count}\n"
-                    f"  numeric_cols: {numeric_cols[:3]}\n"
-                    f"  datetime_col: {datetime_col}\n"
-                    f"  low_card_cols: {low_card_cols[:3]}\n"
-                    f"  sample (first 3 rows): {sample_rows}\n\n"
-                    f"Output ONLY the insight sentence, nothing else."
-                )
-
-            raw_response = _get_llm_response(insight_prompt).strip()
-
-            if is_kpi:
-                try:
-                    from superset.utils import json as superset_json
-
-                    parsed = superset_json.loads(raw_response)
-                    if isinstance(parsed, dict):
-                        if parsed.get("insight"):
-                            summary["insight"] = str(parsed["insight"])[:200]
-                        if isinstance(parsed.get("statistics"), dict):
-                            statistics = parsed["statistics"]
-                except (ValueError, KeyError):
-                    # Fallback: treat whole response as insight text
-                    if raw_response:
-                        summary["insight"] = raw_response[:200]
-            else:
-                if raw_response:
-                    summary["insight"] = raw_response[:200]
+            insight, statistics = generate_llm_insight(
+                row_count=row_count,
+                sample_rows=rows[:3] if rows else [],
+                numeric_cols=numeric_cols,
+                string_cols=string_cols,
+                datetime_col=datetime_col,
+                col_stats=col_stats,
+                trend=trend,
+            )
+            if insight:
+                summary["insight"] = insight
         except Exception as exc:
             logger.warning("analyze_result insight generation failed: %s", exc)
 
@@ -654,6 +636,8 @@ def generate_questions(
         f"  指标列: {summary.get('numeric_cols')}\n"
         f"  维度列: {summary.get('string_cols')}\n"
         f"  时间列: {summary.get('datetime_col')}\n"
+        f"  统计摘要: {summary.get('col_stats')}\n"
+        f"  趋势: {summary.get('trend')}\n"
         f"  一句话洞察: {summary.get('insight')}\n"
         f"请根据上述数据特征，推理出 3 条用户可能最想进行下钻排查、或多维对比分析的后续跟进问题（用中文）。\n"
         f"请输出合法JSON，格式如下：\n"

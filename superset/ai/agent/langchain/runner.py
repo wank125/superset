@@ -25,9 +25,8 @@ from contextlib import contextmanager
 from typing import Any
 
 import httpx
-from langgraph.errors import GraphRecursionError
-
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
 from superset.ai.agent.confirmation import (
@@ -45,6 +44,11 @@ from superset.ai.agent.langchain.llm import get_langchain_llm
 from superset.ai.agent.langchain.memory import LangChainMemoryAdapter
 from superset.ai.agent.langchain.prompts import prompt_adapter
 from superset.ai.agent.langchain.tools import tool_adapter
+from superset.ai.agent.structured_context import (
+    build_dataset_context,
+    build_query_context,
+    extract_table_from_sql,
+)
 from superset.ai.config import get_max_turns
 from superset.ai.errors import format_user_facing_error
 from superset.ai.runner import AgentRunner
@@ -52,6 +56,8 @@ from superset.ai.tools.analyze_data import AnalyzeDataTool
 from superset.ai.tools.base import BaseTool
 from superset.ai.tools.create_chart import CreateChartTool
 from superset.ai.tools.create_dashboard import CreateDashboardTool
+from superset.ai.tools.data_analysis import DataAnalysisTool
+from superset.ai.tools.embed_dashboard import EmbedDashboardTool
 from superset.ai.tools.execute_sql import ExecuteSqlTool
 from superset.ai.tools.get_chart_detail import GetChartDetailTool
 from superset.ai.tools.get_dashboard_detail import GetDashboardDetailTool
@@ -65,7 +71,7 @@ from superset.ai.tools.report_status import ReportStatusTool
 from superset.ai.tools.saved_query import SavedQueryTool
 from superset.ai.tools.search_datasets import SearchDatasetsTool
 from superset.ai.tools.whoami import WhoAmITool
-from superset.ai.tools.embed_dashboard import EmbedDashboardTool
+from superset.utils import json as superset_json
 
 
 @contextmanager
@@ -91,6 +97,7 @@ _DATA_ASSISTANT_TOOLS: list[tuple[type[BaseTool], list[str]]] = [
     # Database query tools
     (GetSchemaTool, ["database_id", "default_schema"]),
     (ExecuteSqlTool, ["database_id"]),
+    (DataAnalysisTool, ["database_id"]),
     (SearchDatasetsTool, ["database_id", "schema_name"]),
     # Superset asset tools
     (ListDatabasesTool, []),
@@ -205,6 +212,8 @@ class LangChainAgentRunner(AgentRunner):
         self._sql_error_count: int = 0
         self._loop_detected: bool = False
         self._stream_repeat_detected: bool = False
+        self._tool_args_by_id: dict[str, dict[str, Any]] = {}
+        self._latest_tool_args_by_name: dict[str, dict[str, Any]] = {}
 
     def run(self, message: str) -> Iterator[AgentEvent]:
         """Execute the agent and yield AgentEvent instances."""
@@ -290,6 +299,8 @@ class LangChainAgentRunner(AgentRunner):
                 self._content_parts = []
                 self._sql_results = []
                 self._sql_error_count = 0
+                self._tool_args_by_id = {}
+                self._latest_tool_args_by_name = {}
                 buffered_events = []
                 callback._turn_chars = 0
                 callback._turn_text = ""
@@ -317,13 +328,19 @@ class LangChainAgentRunner(AgentRunner):
                     config=config,
                     stream_mode=["messages", "updates"],
                 ):
-                    if self._loop_detected:
+                    if self._loop_detected or callback.stopped:
                         logger.warning(
-                            "Loop detected, breaking agent stream early"
+                            "Safety stop detected, breaking agent stream early"
                         )
                         break
                     for event in self._translate_event(mode, chunk):
                         buffered_events.append(event)
+                    if self._loop_detected or callback.stopped:
+                        logger.warning(
+                            "Safety stop detected after event translation, "
+                            "breaking agent stream early"
+                        )
+                        break
 
                 if self._loop_detected:
                     # Loop guard already emitted an error event;
@@ -457,9 +474,10 @@ class LangChainAgentRunner(AgentRunner):
                             probe = second_half[:probe_len]
                             if probe in first_half:
                                 self._stream_repeat_detected = True
+                                self._loop_detected = True
                                 logger.warning(
                                     "Stream repetition detected at %d chars, "
-                                    "suppressing further text_chunk events",
+                                    "stopping agent stream early",
                                     len(full),
                                 )
                 if not self._stream_repeat_detected:
@@ -477,6 +495,9 @@ class LangChainAgentRunner(AgentRunner):
             # Collect execute_sql results for consistency check
             if tool_name == "execute_sql" and result:
                 self._sql_results.append(str(result))
+                self._persist_query_context(tool_name, msg, str(result))
+            elif tool_name == "analyze_data" and result:
+                self._persist_query_context(tool_name, msg, str(result))
             yield AgentEvent(
                 type="tool_result",
                 data={
@@ -491,6 +512,46 @@ class LangChainAgentRunner(AgentRunner):
                         "message": "数据库连接池已耗尽，请稍后重试。",
                     },
                 )
+
+            # Emit structured data analysis events for the frontend
+            if (
+                tool_name == "analyze_data"
+                and isinstance(result, str)
+                and not result.startswith("Error")
+            ):
+                try:
+                    parsed = superset_json.loads(result)
+                    if isinstance(parsed, dict) and "row_count" in parsed:
+                        event_data: dict[str, Any] = {
+                            "row_count": parsed.get("row_count"),
+                        }
+                        if parsed.get("columns"):
+                            event_data["columns"] = parsed["columns"]
+                        if parsed.get("rows"):
+                            event_data["rows"] = parsed["rows"]
+                        if parsed.get("suitability"):
+                            event_data["suitability"] = parsed["suitability"]
+                        if parsed.get("statistics"):
+                            event_data["statistics"] = parsed["statistics"]
+                        if parsed.get("col_stats"):
+                            event_data["col_stats"] = parsed["col_stats"]
+                        if parsed.get("trend"):
+                            event_data["trend"] = parsed["trend"]
+                        if parsed.get("suggest_questions"):
+                            event_data["suggest_questions"] = parsed[
+                                "suggest_questions"
+                            ]
+                        insight = parsed.get("insight")
+                        if insight:
+                            event_data["insight"] = insight
+                        yield AgentEvent(type="data_analyzed", data=event_data)
+                        if insight:
+                            yield AgentEvent(
+                                type="insight_generated",
+                                data={"insight": insight},
+                            )
+                except (ValueError, KeyError):
+                    pass
 
             # Self-repair: detect SQL errors and inject a repair hint
             # so the LLM can self-correct in the next ReAct step.
@@ -561,6 +622,11 @@ class LangChainAgentRunner(AgentRunner):
                             type="tool_call",
                             data={"tool": tool_name, "args": args},
                         )
+                        tool_call_id = tool_call.get("id")
+                        if tool_call_id and isinstance(args, dict):
+                            self._tool_args_by_id[tool_call_id] = args
+                        if isinstance(args, dict):
+                            self._latest_tool_args_by_name[tool_name] = args
                         if (
                             tool_name == "execute_sql"
                             and isinstance(args, dict)
@@ -586,6 +652,61 @@ class LangChainAgentRunner(AgentRunner):
                         type="text_chunk",
                         data={"content": msg.content},
                     )
+
+    def _persist_query_context(
+        self,
+        tool_name: str,
+        msg: ToolMessage,
+        result: str,
+    ) -> None:
+        """Persist structured query/dataset context for later agent modes."""
+        tool_call_id = getattr(msg, "tool_call_id", "")
+        args = self._tool_args_by_id.get(
+            tool_call_id,
+            self._latest_tool_args_by_name.get(tool_name, {}),
+        )
+        sql = str(args.get("sql", "")).strip()
+        if not sql:
+            return
+
+        table_name = extract_table_from_sql(sql)
+        memory = self._get_memory()
+        try:
+            parsed = (
+                superset_json.loads(result)
+                if tool_name == "analyze_data" and result.strip().startswith("{")
+                else None
+            )
+            columns = parsed.get("columns") if isinstance(parsed, dict) else None
+            row_count = parsed.get("row_count") if isinstance(parsed, dict) else None
+            memory.add_structured_context(
+                "query_context",
+                build_query_context(
+                    sql=sql,
+                    result_preview=result,
+                    database_id=self._database_id,
+                    schema_name=self._schema_name,
+                    table_name=table_name,
+                    columns=columns if isinstance(columns, list) else None,
+                    row_count=row_count if isinstance(row_count, int) else None,
+                ),
+            )
+            if table_name:
+                memory.add_structured_context(
+                    "dataset_context",
+                    build_dataset_context(
+                        table_name=table_name,
+                        sql=sql,
+                        database_id=self._database_id,
+                        schema_name=self._schema_name,
+                    ),
+                )
+        except Exception:
+            logger.warning(
+                "Failed to persist structured context for %s",
+                tool_name,
+                exc_info=True,
+            )
 
 
 def _deduplicate_content(parts: list[str]) -> str:

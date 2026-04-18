@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from superset.ai.chart_types.registry import get_chart_registry
 from superset.ai.tools.base import BaseTool
 from superset.ai.tools.execute_sql import ExecuteSqlTool
@@ -178,6 +180,111 @@ class AnalyzeDataTool(BaseTool):
 
             analysis.append(col_info)
         return analysis
+
+    @staticmethod
+    def _compute_statistics(
+        columns: list[str],
+        rows: list[list[str]],
+        col_analysis: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Per-column descriptive statistics.
+
+        numeric → mean, median, std, p25, p75, min, max, sum, null_count, null_pct
+        string  → null_count, null_pct, distinct_count, top_value
+        """
+        total_rows = len(rows)
+        if total_rows == 0:
+            return {}
+
+        result: dict[str, dict[str, Any]] = {}
+        for idx, col in enumerate(col_analysis):
+            col_name = col["name"]
+            values = [row[idx] for row in rows if idx < len(row)]
+            non_empty = [v for v in values if v and v != "NULL"]
+            null_count = total_rows - len(non_empty)
+
+            if col["type"] == "numeric":
+                nums: list[float] = []
+                for v in non_empty:
+                    try:
+                        nums.append(float(v.replace(",", "")))
+                    except (ValueError, AttributeError):
+                        pass
+
+                if nums:
+                    arr = np.array(nums, dtype=float)
+                    result[col_name] = {
+                        "mean": round(float(np.mean(arr)), 4),
+                        "median": round(float(np.median(arr)), 4),
+                        "std": round(float(np.std(arr)), 4),
+                        "p25": round(float(np.percentile(arr, 25)), 4),
+                        "p75": round(float(np.percentile(arr, 75)), 4),
+                        "min": round(float(np.min(arr)), 4),
+                        "max": round(float(np.max(arr)), 4),
+                        "sum": round(float(np.sum(arr)), 4),
+                        "null_count": null_count,
+                        "null_pct": round(null_count / total_rows, 4),
+                    }
+                else:
+                    result[col_name] = {
+                        "null_count": null_count,
+                        "null_pct": round(null_count / total_rows, 4),
+                    }
+            else:
+                distinct = list(dict.fromkeys(non_empty))
+                # top_value = most frequent
+                freq: dict[str, int] = {}
+                for v in non_empty:
+                    freq[v] = freq.get(v, 0) + 1
+                top_val = max(freq, key=freq.get) if freq else None
+                result[col_name] = {
+                    "null_count": null_count,
+                    "null_pct": round(null_count / total_rows, 4),
+                    "distinct_count": len(distinct),
+                    "top_value": top_val,
+                }
+
+        return result
+
+    @staticmethod
+    def _detect_trend(
+        numeric_values: list[float],
+    ) -> dict[str, Any] | None:
+        """Detect trend direction via linear regression.
+
+        Returns {"direction": "上升"/"下降"/"平稳", "slope": float,
+                 "strength": float} or None if insufficient data.
+        """
+        n = len(numeric_values)
+        if n < 3:
+            return None
+
+        arr = np.array(numeric_values, dtype=float)
+        mean_val = float(np.mean(arr))
+        if mean_val == 0:
+            return None
+
+        slope, intercept = np.polyfit(np.arange(n), arr, 1)
+        predicted = slope * np.arange(n) + intercept
+        ss_res = float(np.sum((arr - predicted) ** 2))
+        ss_tot = float(np.sum((arr - mean_val) ** 2))
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+
+        # Normalized slope: relative change per step
+        rel_slope = float(slope) / abs(mean_val)
+
+        if abs(rel_slope) < 0.02 or r_squared < 0.2:
+            direction = "平稳"
+        elif rel_slope > 0:
+            direction = "上升"
+        else:
+            direction = "下降"
+
+        return {
+            "direction": direction,
+            "slope": round(float(slope), 4),
+            "strength": round(r_squared, 4),
+        }
 
     @staticmethod
     def _recommend_charts(

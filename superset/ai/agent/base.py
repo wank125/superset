@@ -28,8 +28,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import Any
 
-import re as _re
-
 from superset.ai.agent.confirmation import (
     confirmation_required_message,
     is_creation_confirmed,
@@ -37,27 +35,17 @@ from superset.ai.agent.confirmation import (
 )
 from superset.ai.agent.context import ConversationContext
 from superset.ai.agent.events import AgentEvent
+from superset.ai.agent.structured_context import (
+    build_dataset_context,
+    build_query_context,
+    dump_context,
+    extract_table_from_sql,
+)
 from superset.ai.config import get_max_turns
 from superset.ai.errors import format_user_facing_error
 from superset.ai.llm.base import BaseLLMProvider
 from superset.ai.llm.types import LLMMessage, ToolCall
 from superset.ai.tools.base import BaseTool
-from superset.utils import json as _json
-
-
-def _extract_table_from_sql(sql: str) -> str | None:
-    """Extract the primary table name from a SQL FROM clause.
-
-    Strips leading WITH/CTE clauses so the regex hits the top-level FROM.
-    On failure no dataset_context is written and the chart mode falls back
-    to its normal search path.
-    """
-    # Strip CTE preamble so the first FROM is the top-level one
-    cleaned = _re.sub(
-        r"^\s*WITH\s+.*?\)\s*", "", sql, count=1, flags=_re.IGNORECASE | _re.DOTALL,
-    )
-    m = _re.search(r'\bFROM\s+"?(\w+)"?', cleaned, _re.IGNORECASE)
-    return m.group(1) if m else None
 
 
 class BaseAgent(ABC):
@@ -319,16 +307,28 @@ class BaseAgent(ABC):
                         "execute_sql",
                         f"SQL: {sql}\nResult preview: {preview}",
                     ))
+                    tool_summaries.append((
+                        "query_context",
+                        dump_context(build_query_context(
+                            sql=sql,
+                            result_preview=str(result),
+                            database_id=getattr(self, "_database_id", None),
+                            schema_name=getattr(self, "_schema_name", None),
+                            table_name=extract_table_from_sql(sql),
+                        )),
+                    ))
 
                     # Cross-mode context: extract table name for chart mode reuse
-                    table_name = _extract_table_from_sql(sql)
+                    table_name = extract_table_from_sql(sql)
                     if table_name:
                         tool_summaries.append((
                             "dataset_context",
-                            _json.dumps(
-                                {"table_name": table_name, "sql": sql[:500]},
-                                ensure_ascii=False,
-                            ),
+                            dump_context(build_dataset_context(
+                                table_name=table_name,
+                                sql=sql,
+                                database_id=getattr(self, "_database_id", None),
+                                schema_name=getattr(self, "_schema_name", None),
+                            )),
                         ))
 
                 messages.append(

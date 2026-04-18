@@ -377,6 +377,10 @@ def run_graph(  # noqa: C901
         done_data["created_charts"] = created_charts
     if last_sql:
         done_data["sql"] = last_sql
+    if last_table_name:
+        done_data["table_name"] = last_table_name
+    if last_row_count is not None:
+        done_data["row_count"] = last_row_count
     yield AgentEvent(type="done", data=done_data)
 
 

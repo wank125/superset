@@ -29,6 +29,7 @@ from langchain_core.messages import (
 )
 
 from superset.ai.agent.context import ConversationContext
+from superset.ai.agent.structured_context import ContextKind, StructuredContext
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,14 @@ class LangChainMemoryAdapter:
     def add_ai_message(self, content: str) -> None:
         """Persist an assistant message to the shared Redis key."""
         self._ctx.add_message("assistant", content)
+
+    def add_structured_context(
+        self,
+        kind: ContextKind,
+        context: StructuredContext,
+    ) -> None:
+        """Persist a structured cross-agent context payload."""
+        self._ctx.add_structured_context(kind, context)
 
     def clear(self) -> None:
         """Clear conversation history."""

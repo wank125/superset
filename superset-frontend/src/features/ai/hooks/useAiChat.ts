@@ -42,14 +42,12 @@ function createSessionId(): string {
 
 let stepCounter = 0;
 
-function appendSqlResult(content: string, sqlResult: string | null): string {
+function formatSqlResult(sqlResult: string | null): string {
   const result = sqlResult?.trim();
-  if (!result || content.includes(SQL_RESULT_HEADER)) {
-    return content;
+  if (!result) {
+    return '';
   }
-  const prefix = content.trim();
-  const resultBlock = `${SQL_RESULT_HEADER}：\n\n\`\`\`text\n${result}\n\`\`\``;
-  return prefix ? `${prefix}\n\n${resultBlock}` : resultBlock;
+  return `${SQL_RESULT_HEADER}：\n\n\`\`\`text\n${result}\n\`\`\``;
 }
 
 export function useAiChat(
@@ -150,7 +148,7 @@ export function useAiChat(
   const createAssistantMessage = useCallback(
     (content: string, finalSteps: AiStep[]): AiChatMessage => ({
       role: 'assistant' as const,
-      content: appendSqlResult(content, latestSqlResultRef.current),
+      content,
       timestamp: Date.now(),
       steps: finalSteps.length > 0 ? finalSteps : undefined,
     }),
@@ -204,15 +202,26 @@ export function useAiChat(
             } else {
               lines.push(`${charts.length} 张图表创建成功：`);
               charts.forEach(c => {
-                lines.push(`- [${c.sliceName}](${c.exploreUrl}) (${c.vizType})`);
+                lines.push(
+                  `- [${c.sliceName}](${c.exploreUrl}) (${c.vizType})`,
+                );
               });
             }
-            return [...msgs, createAssistantMessage(lines.join('\n'), finalSteps)];
+            return [
+              ...msgs,
+              createAssistantMessage(lines.join('\n'), finalSteps),
+            ];
           }
           // Preview-only or sql-result-only: append empty assistant message to
           // carry over finalSteps (shows step history in the bubble).
           if (hasPreviews || latestSqlResultRef.current) {
-            return [...msgs, createAssistantMessage('', finalSteps)];
+            return [
+              ...msgs,
+              createAssistantMessage(
+                formatSqlResult(latestSqlResultRef.current),
+                finalSteps,
+              ),
+            ];
           }
           return msgs;
         });
@@ -294,8 +303,7 @@ export function useAiChat(
                   const qr: SqlQueryResult = {
                     columns:
                       (event.data.columns as SqlQueryResult['columns']) || [],
-                    rows:
-                      (event.data.rows as SqlQueryResult['rows']) || [],
+                    rows: (event.data.rows as SqlQueryResult['rows']) || [],
                     row_count: rowCount,
                     insight: (event.data.insight as string) || undefined,
                     statistics:
@@ -463,7 +471,8 @@ export function useAiChat(
                 setClarifyState({
                   question: (event.data.question as string) || '请补充信息：',
                   clarifyType: (event.data.clarify_type as string) || 'general',
-                  options: (event.data.options as ClarifyState['options']) || [],
+                  options:
+                    (event.data.options as ClarifyState['options']) || [],
                   answerPrefix:
                     (event.data.context as Record<string, string>)
                       ?.answer_prefix || '',
@@ -471,6 +480,31 @@ export function useAiChat(
                     (event.data.context as Record<string, string>)
                       ?.original_request || '',
                 });
+                break;
+              }
+              case 'retrying': {
+                const attempt = event.data.attempt as number;
+                const reason = (event.data.reason as string) || '';
+                const label = reason
+                  ? `重试 (${attempt}): ${reason}`
+                  : `重试 (${attempt})`;
+                addStep(label, 'running', 'retrying');
+                break;
+              }
+              case 'chart_updated': {
+                const updated: ChartResult = {
+                  chartId: event.data.chart_id as number,
+                  sliceName: (event.data.slice_name as string) || '',
+                  vizType: (event.data.viz_type as string) || '',
+                  exploreUrl: (event.data.explore_url as string) || '',
+                };
+                chartResultsRef.current = [...chartResultsRef.current, updated];
+                setChartResults(prev => [...prev, updated]);
+                addStep(
+                  `图表已更新: ${updated.sliceName}`,
+                  'done',
+                  'chart_updated',
+                );
                 break;
               }
               case 'error_fixed': {

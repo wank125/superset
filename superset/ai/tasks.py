@@ -23,6 +23,13 @@ from typing import Any
 
 from superset.ai.agent.confirmation import is_creation_confirmed
 from superset.ai.agent.events import AgentEvent
+from superset.ai.agent.structured_context import (
+    build_chart_context,
+    build_dataset_context,
+    build_query_context,
+    dump_context,
+    load_context,
+)
 from superset.ai.config import get_agent_timeout
 from superset.ai.errors import format_user_facing_error
 from superset.extensions import celery_app
@@ -35,21 +42,24 @@ def _extract_previous_charts(history: list[dict[str, Any]]) -> list[dict[str, An
     """Extract chart summaries from tool_summary entries in conversation history.
 
     Used by Phase 14 chart modification to identify previously created charts.
-    Returns all create_chart tool_summaries from the most recent batch
+    Returns all chart context summaries from the most recent batch
     (consecutive entries from the end of history).
     """
     from superset.utils import json as superset_json
 
     charts: list[dict[str, Any]] = []
-    # Walk history in reverse, collecting consecutive create_chart summaries
+    # Walk history in reverse, collecting consecutive chart summaries
     for entry in reversed(history):
-        if (
-            entry.get("role") == "tool_summary"
-            and entry.get("tool") == "create_chart"
+        if entry.get("role") == "tool_summary" and entry.get("tool") in (
+            "chart_context",
+            "create_chart",
         ):
             content = entry.get("content", "")
             data: dict[str, Any] | None = None
-            if isinstance(content, str):
+            structured = load_context(content, expected_kind="chart_context")
+            if structured is not None and structured.get("chart_id"):
+                data = structured
+            elif isinstance(content, str):
                 try:
                     parsed = superset_json.loads(content)
                     if isinstance(parsed, dict) and "chart_id" in parsed:
@@ -231,7 +241,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 if agent_type == "dashboard" and not is_creation_confirmed(message):
                     confirmation_message = (
                         "我可以帮你创建仪表板，但需要你先确认。"
-                        "我还没有执行任何创建操作。请回复"确认创建仪表板"后我再继续。"
+                        "我还没有执行任何创建操作。请回复\"确认创建仪表板\"后我再继续。"
                     )
                     ctx.add_tool_summary("original_request", message)
                     stream.publish_event(
@@ -269,7 +279,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 # Collect the done event to extract conversation summary
                 assistant_summary = ""
                 sql_executed = ""
-                created_chart_summaries: list[str] = []
+                created_chart_contexts: list[dict[str, Any]] = []
                 analysis_plan_data: dict[str, Any] | None = None
                 done_data: dict[str, Any] = {}
                 for event in events:
@@ -278,11 +288,7 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                     if event.type == "sql_generated" and event.data.get("sql"):
                         sql_executed = event.data["sql"]
                     if event.type == "chart_created" and event.data:
-                        created_chart_summaries.append(
-                            f"chart_id={event.data.get('chart_id')}, "
-                            f"slice_name={event.data.get('slice_name')}, "
-                            f"viz_type={event.data.get('viz_type')}"
-                        )
+                        created_chart_contexts.append(dict(event.data))
                     if event.type == "analysis_plan" and event.data:
                         analysis_plan_data = event.data
                     if event.type == "done":
@@ -293,13 +299,9 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 # are suppressed by child_events_published flag in runner)
                 if done_data.get("sql") and not sql_executed:
                     sql_executed = done_data["sql"]
-                if done_data.get("created_charts") and not created_chart_summaries:
+                if done_data.get("created_charts") and not created_chart_contexts:
                     for chart in done_data["created_charts"]:
-                        created_chart_summaries.append(
-                            f"chart_id={chart.get('chart_id')}, "
-                            f"slice_name={chart.get('slice_name')}, "
-                            f"viz_type={chart.get('viz_type')}"
-                        )
+                        created_chart_contexts.append(chart)
 
                 # Write assistant response back to conversation history
                 if assistant_summary:
@@ -307,22 +309,67 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
 
                 # Phase 11: persist SQL as tool summary for next-turn context
                 if sql_executed:
+                    row_count = done_data.get("row_count")
                     ctx.add_tool_summary(
                         "execute_sql",
                         f"SQL: {sql_executed[:500]}",
                     )
+                    table_name = done_data.get("table_name")
+                    ctx.add_structured_context(
+                        "query_context",
+                        build_query_context(
+                            sql=sql_executed,
+                            result_preview=assistant_summary,
+                            database_id=database_id,
+                            schema_name=schema_name,
+                            table_name=(
+                                str(table_name) if table_name else None
+                            ),
+                            row_count=(
+                                int(row_count) if row_count is not None else None
+                            ),
+                        ),
+                    )
+                    if table_name:
+                        ctx.add_structured_context(
+                            "dataset_context",
+                            build_dataset_context(
+                                table_name=str(table_name),
+                                sql=sql_executed,
+                                database_id=database_id,
+                                schema_name=schema_name,
+                            ),
+                        )
 
                 # Phase 11: persist created charts for "modify this chart" context
-                for chart_summary in created_chart_summaries:
-                    ctx.add_tool_summary("create_chart", chart_summary)
+                for chart in created_chart_contexts:
+                    chart_id = chart.get("chart_id")
+                    if not chart_id:
+                        continue
+                    datasource_id = chart.get("datasource_id")
+                    ctx.add_structured_context(
+                        "chart_context",
+                        build_chart_context(
+                            chart_id=int(chart_id),
+                            slice_name=str(chart.get("slice_name") or ""),
+                            viz_type=str(chart.get("viz_type") or ""),
+                            explore_url=str(chart.get("explore_url") or ""),
+                            datasource_id=(
+                                int(datasource_id)
+                                if datasource_id is not None
+                                else None
+                            ),
+                        ),
+                    )
 
                 # Phase 19: persist analysis plan for confirmation flow
                 if analysis_plan_data:
-                    import json as _json
-
                     ctx.add_tool_summary(
                         "analysis_plan",
-                        _json.dumps(analysis_plan_data),
+                        dump_context({
+                            "kind": "analysis_plan",
+                            "payload": analysis_plan_data,
+                        }),
                     )
             else:
                 runner = create_agent_runner(

@@ -141,6 +141,12 @@ const ResultLabel = styled.span`
   margin-right: 8px;
 `;
 
+const ErrorText = styled.div`
+  color: ${({ theme }) => theme.colorError};
+  padding: 8px 12px;
+  font-size: 13px;
+`;
+
 export function AiChatPanel({
   databaseId,
   onSqlGenerated,
@@ -150,8 +156,9 @@ export function AiChatPanel({
 }: AiChatPanelProps) {
   const [agentType, setAgentType] = useState('data_assistant');
   const [inputValue, setInputValue] = useState('');
-  const [alertConfig, setAlertConfig] =
-    useState<AiAlertConfigResponse | null>(null);
+  const [alertConfig, setAlertConfig] = useState<AiAlertConfigResponse | null>(
+    null,
+  );
   const [alertLoading, setAlertLoading] = useState(false);
   const [alertError, setAlertError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -189,17 +196,6 @@ export function AiChatPanel({
     }
   };
 
-  const handleSend = () => {
-    if (!inputValue.trim() || loading || alertLoading) return;
-
-    if (agentType === 'alert') {
-      handleAlertGenerate(inputValue.trim());
-    } else {
-      sendMessage(inputValue.trim());
-    }
-    setInputValue('');
-  };
-
   const handleAlertGenerate = async (message: string) => {
     if (!databaseId) return;
     setAlertLoading(true);
@@ -220,6 +216,17 @@ export function AiChatPanel({
     }
   };
 
+  const handleSend = () => {
+    if (!inputValue.trim() || loading || alertLoading) return;
+
+    if (agentType === 'alert') {
+      handleAlertGenerate(inputValue.trim());
+    } else {
+      sendMessage(inputValue.trim());
+    }
+    setInputValue('');
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -233,12 +240,17 @@ export function AiChatPanel({
       : agentType === 'chart'
         ? t('Describe the chart you want to create...')
         : agentType === 'alert'
-          ? t('Describe the alert you want to create, e.g. "monitor GMV drop >10%"...')
+          ? t(
+              'Describe the alert you want to create, e.g. "monitor GMV drop >10%"...',
+            )
           : t('Ask a question about your data...');
 
   // Latest results from the most recent agent run
   const latestChart =
     chartResults.length > 0 ? chartResults[chartResults.length - 1] : null;
+  // auto mode: resolve to actual routed agent for result rendering
+  const effectiveAgent =
+    agentType === 'auto' && routedAgent ? routedAgent : agentType;
 
   return (
     <PanelContainer>
@@ -278,78 +290,75 @@ export function AiChatPanel({
                     onCopyToEditor={onSqlGenerated}
                   />
                 )}
-                {(agentType === 'chart' || agentType === 'dashboard') &&
-                  sqlPreview && (
-                    <AiSqlPreview
-                      sql={sqlPreview}
-                      onCopyToEditor={onSqlGenerated}
-                    />
-                  )}
-                {agentType === 'chart' && latestChart && onChartCreated && (
-                  <ResultCard
-                    href={latestChart.exploreUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={e => {
-                      e.preventDefault();
-                      onChartCreated(
-                        latestChart.chartId,
-                        latestChart.exploreUrl,
-                      );
-                    }}
-                  >
-                    <ResultLabel>{t('View Chart')}</ResultLabel>
-                    {latestChart.sliceName} ({latestChart.vizType}) →
-                  </ResultCard>
-                )}
-                {agentType === 'dashboard' &&
-                  dashboardResult &&
-                  onDashboardCreated && (
-                    <ResultCard
-                      href={dashboardResult.dashboardUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={e => {
-                        e.preventDefault();
-                        onDashboardCreated(
-                          dashboardResult.dashboardId,
-                          dashboardResult.dashboardUrl,
-                        );
-                      }}
-                    >
-                      <ResultLabel>{t('View Dashboard')}</ResultLabel>
-                      {dashboardResult.dashboardTitle} (
-                      {dashboardResult.chartCount} {t('charts')}) →
-                    </ResultCard>
-                  )}
-                {agentType === 'dashboard' &&
-                  chartResults.length > 0 &&
-                  !dashboardResult && (
-                    <div style={{ marginTop: 4 }}>
-                      {chartResults.map(cr => (
-                        <ResultCard
-                          key={cr.chartId}
-                          href={cr.exploreUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={e => {
-                            e.preventDefault();
-                            if (onChartCreated) {
-                              onChartCreated(cr.chartId, cr.exploreUrl);
-                            }
-                          }}
-                          style={{ marginBottom: 4 }}
-                        >
-                          <ResultLabel>{t('Chart')}</ResultLabel>
-                          {cr.sliceName} ({cr.vizType}) →
-                        </ResultCard>
-                      ))}
-                    </div>
-                  )}
               </>
             )}
           </div>
         ))}
+        {/* Render global states (SQL Preview, ResultCards) outside the message loop */}
+        {(effectiveAgent === 'chart' || effectiveAgent === 'dashboard') &&
+          sqlPreview && (
+            <AiSqlPreview sql={sqlPreview} onCopyToEditor={onSqlGenerated} />
+          )}
+        {effectiveAgent === 'chart' && latestChart && (
+          <ResultCard
+            href={latestChart.exploreUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => {
+              if (onChartCreated) {
+                e.preventDefault();
+                onChartCreated(latestChart.chartId, latestChart.exploreUrl);
+              }
+            }}
+          >
+            <ResultLabel>{t('View Chart')}</ResultLabel>
+            {latestChart.sliceName} ({latestChart.vizType}) →
+          </ResultCard>
+        )}
+        {effectiveAgent === 'dashboard' && dashboardResult && (
+          <ResultCard
+            href={dashboardResult.dashboardUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => {
+              if (onDashboardCreated) {
+                e.preventDefault();
+                onDashboardCreated(
+                  dashboardResult.dashboardId,
+                  dashboardResult.dashboardUrl,
+                );
+              }
+            }}
+          >
+            <ResultLabel>{t('View Dashboard')}</ResultLabel>
+            {dashboardResult.dashboardTitle} (
+            {dashboardResult.chartCount} {t('charts')}) →
+          </ResultCard>
+        )}
+        {effectiveAgent === 'dashboard' &&
+          chartResults.length > 0 &&
+          !dashboardResult && (
+            <div style={{ marginTop: 4 }}>
+              {chartResults.map(cr => (
+                <ResultCard
+                  key={cr.chartId}
+                  href={cr.exploreUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={e => {
+                    e.preventDefault();
+                    if (onChartCreated) {
+                      onChartCreated(cr.chartId, cr.exploreUrl);
+                    }
+                  }}
+                  style={{ marginBottom: 4 }}
+                >
+                  <ResultLabel>{t('Chart')}</ResultLabel>
+                  {cr.sliceName} ({cr.vizType}) →
+                </ResultCard>
+              ))}
+            </div>
+          )}
         {loading && steps.length > 0 && <AiStepProgress steps={steps} />}
         {loading && streamingText && <AiStreamingText text={streamingText} />}
         {loading && !streamingText && steps.length === 0 && (
@@ -359,15 +368,12 @@ export function AiChatPanel({
           <AiStreamingText text={t('Generating alert rule...')} />
         )}
         {alertError && !alertLoading && (
-          <div style={{ color: '#ff4d4f', padding: '8px 12px', fontSize: 13 }}>
+          <ErrorText>
             {t('Alert generation failed')}: {alertError}
-          </div>
+          </ErrorText>
         )}
         {alertConfig && !alertLoading && (
-          <AlertConfigCard
-            config={alertConfig}
-            databaseId={databaseId}
-          />
+          <AlertConfigCard config={alertConfig} databaseId={databaseId} />
         )}
         {clarifyState && (
           <AiClarifyOptions

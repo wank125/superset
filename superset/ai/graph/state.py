@@ -49,6 +49,8 @@ class ResultSummary(TypedDict):
     low_cardinality_cols: list[str]  # distinct < 20
     suitability_flags: dict[str, bool]
     insight: str | None  # Phase 11: LLM-generated one-line data insight
+    col_stats: dict[str, dict[str, Any]]  # Per-column descriptive statistics
+    trend: dict[str, Any]  # Trend detection: direction, slope, strength
 
 
 class ChartIntent(TypedDict):

@@ -40,6 +40,7 @@ from typing import Any, Literal
 
 from langgraph.types import Command
 
+from superset.ai.agent.structured_context import read_latest_context
 from superset.ai.graph.llm_helpers import llm_call_json, llm_call_json_list
 from superset.ai.graph.state import DashboardState, SchemaSummary
 from superset.utils import json
@@ -194,6 +195,10 @@ def _was_plan_published(history: list[dict[str, Any]]) -> bool:
 
 def _read_dataset_context(history: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Read the most recent dataset_context tool_summary from conversation history."""
+    structured = read_latest_context(history, "dataset_context")
+    if structured is not None:
+        return structured
+
     for entry in reversed(history[-10:]):
         if (
             entry.get("role") == "tool_summary"
@@ -201,10 +206,17 @@ def _read_dataset_context(history: list[dict[str, Any]]) -> dict[str, Any] | Non
             and entry.get("content")
         ):
             try:
-                return json.loads(entry["content"])
-            except (ValueError, KeyError):
-                pass
+                legacy = json.loads(entry["content"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if isinstance(legacy, dict) and legacy.get("table_name"):
+                return legacy
     return None
+
+
+def _read_query_context(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Read the most recent query_context tool_summary from conversation history."""
+    return read_latest_context(history, "query_context")
 
 
 def _normalize_preferred_viz(value: Any) -> str | None:
@@ -764,11 +776,20 @@ def parse_request(
 
     # Cross-mode context: reuse dataset from previous data_assistant turn
     dataset_ctx = _read_dataset_context(state.get("conversation_history") or [])
-    if dataset_ctx:
+    query_ctx = _read_query_context(state.get("conversation_history") or [])
+    table_name = dataset_ctx.get("table_name") if dataset_ctx else None
+    if table_name:
         context_block += (
-            f"\nPrevious query used table: {dataset_ctx['table_name']}"
+            f"\nPrevious query used table: {table_name}"
             f"\nPrevious SQL: {dataset_ctx.get('sql', '')[:200]}"
-            f"\nPrefer reusing this table unless user explicitly mentions a different one."
+            "\nPrefer reusing this table unless user explicitly mentions "
+            "a different one."
+        )
+    elif query_ctx:
+        context_block += (
+            f"\nPrevious SQL: {query_ctx.get('sql', '')[:200]}"
+            "\nPrefer reusing its dataset unless user explicitly mentions "
+            "a different one."
         )
 
     prompt = PARSE_PROMPT.format(
@@ -870,24 +891,25 @@ def search_dataset(
     # try to directly resolve the context table to skip the full search.
     dataset_ctx = _read_dataset_context(state.get("conversation_history") or [])
     target = state.get("goal", {}).get("target_table", "")
+    context_table = dataset_ctx.get("table_name") if dataset_ctx else None
 
-    if dataset_ctx and (
-        not target or target.lower() == dataset_ctx["table_name"].lower()
+    if context_table and (
+        not target or target.lower() == context_table.lower()
     ):
-        result_str = tool.run({"table_name": dataset_ctx["table_name"]})
+        result_str = tool.run({"table_name": context_table})
         try:
             result = json.loads(result_str)
             if result.get("status") == "found":
                 logger.info(
                     "search_dataset: reusing context table %s",
-                    dataset_ctx["table_name"],
+                    context_table,
                 )
                 return Command(
                     update={"dataset_candidates": [result]},
                     goto="select_dataset",
                 )
         except Exception:
-            pass  # Fall through to normal search
+            logger.debug("Failed to resolve dataset_context", exc_info=True)
     if not target:
         # No table name extracted — try to search by a keyword from the request
         target = state["request"][:50]

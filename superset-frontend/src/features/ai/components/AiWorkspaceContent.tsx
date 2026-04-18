@@ -147,6 +147,10 @@ export function AiWorkspaceContent({
   const latestChart =
     chartResults.length > 0 ? chartResults[chartResults.length - 1] : null;
   const hasSqlBlock = (text: string) => /```sql\s*\n[\s\S]*?```/i.test(text);
+  // When agentType is 'auto', routedAgent tells us which agent actually handled
+  // the request. Fall back to agentType so explicit mode selections still work.
+  const effectiveAgent =
+    agentType === 'auto' && routedAgent ? routedAgent : agentType;
 
   return (
     <ContentArea>
@@ -173,72 +177,79 @@ export function AiWorkspaceContent({
             )}
             {msg.role === 'assistant' && idx === messages.length - 1 && (
               <>
-                {agentType === 'data_assistant' && !hasSqlBlock(msg.content) && (
-                  <AiSqlPreview sql={msg.content} onCopyToEditor={onSqlCopy} />
-                )}
-                {(agentType === 'chart' || agentType === 'dashboard') &&
-                  sqlPreview && (
-                    <AiSqlPreview sql={sqlPreview} onCopyToEditor={onSqlCopy} />
-                  )}
-                {agentType === 'chart' && latestChart && onChartClick && (
-                  <ResultCard
-                    href={latestChart.exploreUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={e => {
-                      e.preventDefault();
-                      onChartClick(latestChart.chartId, latestChart.exploreUrl);
-                    }}
-                  >
-                    <ResultLabel>{t('查看图表')}</ResultLabel>
-                    {latestChart.sliceName} ({latestChart.vizType}) →
-                  </ResultCard>
-                )}
-                {agentType === 'dashboard' &&
-                  dashboardResult &&
-                  onDashboardClick && (
-                    <ResultCard
-                      href={dashboardResult.dashboardUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={e => {
-                        e.preventDefault();
-                        onDashboardClick(
-                          dashboardResult.dashboardId,
-                          dashboardResult.dashboardUrl,
-                        );
-                      }}
-                    >
-                      <ResultLabel>{t('查看仪表板')}</ResultLabel>
-                      {dashboardResult.dashboardTitle} (
-                      {dashboardResult.chartCount} {t('张图表')}) →
-                    </ResultCard>
-                  )}
-                {agentType === 'dashboard' &&
-                  chartResults.length > 0 &&
-                  !dashboardResult && (
-                    <ChartListContainer>
-                      {chartResults.map(cr => (
-                        <ResultCard
-                          key={cr.chartId}
-                          href={cr.exploreUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={e => {
-                            e.preventDefault();
-                            onChartClick?.(cr.chartId, cr.exploreUrl);
-                          }}
-                        >
-                          <ResultLabel>{t('图表')}</ResultLabel>
-                          {cr.sliceName} ({cr.vizType}) →
-                        </ResultCard>
-                      ))}
-                    </ChartListContainer>
+                {effectiveAgent === 'data_assistant' &&
+                  !hasSqlBlock(msg.content) && (
+                    <AiSqlPreview
+                      sql={msg.content}
+                      onCopyToEditor={onSqlCopy}
+                    />
                   )}
               </>
             )}
           </div>
         ))}
+        {/* Render global states (SQL Preview, ResultCards) outside the message loop */}
+        {(effectiveAgent === 'chart' || effectiveAgent === 'dashboard') &&
+          sqlPreview && (
+            <AiSqlPreview sql={sqlPreview} onCopyToEditor={onSqlCopy} />
+          )}
+        {effectiveAgent === 'chart' && latestChart && (
+          <ResultCard
+            href={latestChart.exploreUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => {
+              if (onChartClick) {
+                e.preventDefault();
+                onChartClick(latestChart.chartId, latestChart.exploreUrl);
+              }
+            }}
+          >
+            <ResultLabel>{t('查看图表')}</ResultLabel>
+            {latestChart.sliceName} ({latestChart.vizType}) →
+          </ResultCard>
+        )}
+        {effectiveAgent === 'dashboard' && dashboardResult && (
+          <ResultCard
+            href={dashboardResult.dashboardUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => {
+              if (onDashboardClick) {
+                e.preventDefault();
+                onDashboardClick(
+                  dashboardResult.dashboardId,
+                  dashboardResult.dashboardUrl,
+                );
+              }
+            }}
+          >
+            <ResultLabel>{t('查看仪表板')}</ResultLabel>
+            {dashboardResult.dashboardTitle} (
+            {dashboardResult.chartCount} {t('张图表')}) →
+          </ResultCard>
+        )}
+        {effectiveAgent === 'dashboard' &&
+          chartResults.length > 0 &&
+          !dashboardResult && (
+            <ChartListContainer>
+              {chartResults.map(cr => (
+                <ResultCard
+                  key={cr.chartId}
+                  href={cr.exploreUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={e => {
+                    e.preventDefault();
+                    onChartClick?.(cr.chartId, cr.exploreUrl);
+                  }}
+                >
+                  <ResultLabel>{t('图表')}</ResultLabel>
+                  {cr.sliceName} ({cr.vizType}) →
+                </ResultCard>
+              ))}
+            </ChartListContainer>
+          )}
         {loading && steps.length > 0 && <AiStepProgress steps={steps} />}
         {loading && streamingText && <AiStreamingText text={streamingText} />}
         {loading && !streamingText && steps.length === 0 && (

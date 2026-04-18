@@ -81,14 +81,14 @@ class SafeguardCallbackHandler(BaseCallbackHandler):
                 "Stream exceeded %d chars, stopping", self._MAX_STREAM_CHARS
             )
             self._stopped = True
-            raise StopIteration("Response too long, stopped early.")
+            return
 
         if len(self._turn_text) >= 200:
             tail = self._turn_text[-self._TAIL_LEN:]
             if self._turn_text.count(tail) >= self._MAX_REPETITIONS:
                 logger.warning("Detected repetitive output, stopping")
                 self._stopped = True
-                raise StopIteration("Detected repetitive output, stopped.")
+                return
 
     @property
     def stopped(self) -> bool:

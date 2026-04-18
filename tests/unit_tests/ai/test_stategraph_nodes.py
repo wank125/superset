@@ -229,6 +229,49 @@ class TestSearchDataset:
         assert result.goto == "__end__"
         assert result.update["last_error"]["type"] == "tool_error"
 
+    @patch("superset.ai.tools.search_datasets.SearchDatasetsTool")
+    def test_reuses_structured_dataset_context(self, mock_tool_cls):
+        from superset.ai.agent.structured_context import (
+            build_dataset_context,
+            dump_context,
+        )
+        from superset.ai.graph.nodes_parent import search_dataset
+
+        tool_instance = MagicMock()
+        tool_instance.run.return_value = json.dumps({
+            "status": "found",
+            "datasource_id": 7,
+            "table_name": "birth_names",
+            "columns": [],
+            "metrics": [],
+        })
+        mock_tool_cls.return_value = tool_instance
+
+        state = {
+            "database_id": 1,
+            "schema_name": None,
+            "goal": {"target_table": None},
+            "conversation_history": [
+                {
+                    "role": "tool_summary",
+                    "tool": "dataset_context",
+                    "content": dump_context(
+                        build_dataset_context(
+                            table_name="birth_names",
+                            sql="SELECT * FROM birth_names",
+                            database_id=1,
+                            schema_name=None,
+                        )
+                    ),
+                },
+            ],
+        }
+        result = search_dataset(state)
+
+        assert result.goto == "select_dataset"
+        tool_instance.run.assert_called_once_with({"table_name": "birth_names"})
+        assert result.update["dataset_candidates"][0]["datasource_id"] == 7
+
 
 class TestSelectDataset:
     """P3 select_dataset [Code]"""

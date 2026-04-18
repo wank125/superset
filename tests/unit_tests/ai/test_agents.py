@@ -248,16 +248,47 @@ class TestConversationContext:
         mock_cache.cache.set.side_effect = lambda k, v, timeout=None: store.update({k: v})
 
         ctx = ConversationContext(user_id=1, session_id="s1")
-        # Add more than _MAX_TOOL_SUMMARIES (5)
-        for i in range(8):
+        # Add more than _MAX_TOOL_SUMMARIES (8)
+        for i in range(10):
             ctx.add_tool_summary("execute_sql", f"SQL #{i}")
 
         stored = json.loads(store[ctx._key])
         summaries = [e for e in stored if e["role"] == "tool_summary"]
-        # Should keep only last 5
-        assert len(summaries) == 5
-        assert summaries[0]["content"] == "SQL #3"
-        assert summaries[-1]["content"] == "SQL #7"
+        # Should keep only last 8
+        assert len(summaries) == 8
+        assert summaries[0]["content"] == "SQL #2"
+        assert summaries[-1]["content"] == "SQL #9"
+
+    @patch("superset.ai.agent.context.cache_manager")
+    @patch("superset.ai.agent.context.get_max_context_rounds", return_value=5)
+    def test_add_structured_context(self, mock_rounds, mock_cache):
+        from superset.ai.agent.context import ConversationContext
+        from superset.ai.agent.structured_context import (
+            build_dataset_context,
+            load_context,
+        )
+
+        store: dict[str, str] = {}
+        mock_cache.cache.get.side_effect = lambda k: store.get(k)
+        mock_cache.cache.set.side_effect = lambda k, v, timeout=None: store.update({k: v})
+
+        ctx = ConversationContext(user_id=1, session_id="s1")
+        ctx.add_structured_context(
+            "dataset_context",
+            build_dataset_context(
+                table_name="birth_names",
+                sql="SELECT * FROM birth_names",
+                database_id=1,
+                schema_name=None,
+            ),
+        )
+
+        stored = json.loads(store[ctx._key])
+        assert stored[0]["tool"] == "dataset_context"
+        parsed = load_context(stored[0]["content"], expected_kind="dataset_context")
+        assert parsed is not None
+        assert parsed["version"] == 1
+        assert parsed["table_name"] == "birth_names"
 
 
 class TestToolCallRepetitionGuard:
@@ -707,6 +738,42 @@ class TestLangChainOrderGuard:
             session_id="test",
         )
         assert runner._order_guard is None
+
+
+class TestLangChainSafeguards:
+    """Test LangChain streaming safeguards."""
+
+    def test_safeguard_marks_stopped_without_raising(self):
+        from superset.ai.agent.langchain.callbacks import SafeguardCallbackHandler
+
+        callback = SafeguardCallbackHandler()
+        repetitive_tail = "x" * callback._TAIL_LEN
+
+        for _ in range(callback._MAX_REPETITIONS):
+            callback.on_llm_new_token(repetitive_tail)
+
+        assert callback.stopped is True
+
+    def test_repetitive_stream_marks_loop_detected(self):
+        from langchain_core.messages import AIMessageChunk
+
+        from superset.ai.agent.langchain.runner import LangChainAgentRunner
+
+        runner = LangChainAgentRunner(
+            agent_type="nl2sql",
+            database_id=1,
+            schema_name=None,
+            user_id=1,
+            session_id="test",
+        )
+        repeated = "重复输出" * 200
+
+        events = list(
+            runner._handle_messages((AIMessageChunk(content=repeated), {}))
+        )
+
+        assert events == []
+        assert runner._loop_detected is True
 
 
 class TestStateGraphPlanning:
