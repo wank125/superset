@@ -73,6 +73,53 @@ def _publish_retry(
         logger.debug("Failed to publish retry event: %s", exc)
 
 
+def _publish_chart_preview(
+    state: SingleChartState,
+    form_data: dict[str, Any],
+    chart_plan: dict[str, Any],
+) -> None:
+    """Publish a chart_preview event with viz_type, form_data, and parsed query data."""
+    channel_id = state.get("channel_id")
+    if not channel_id:
+        return
+    try:
+        from superset.ai.agent.events import AgentEvent
+        from superset.ai.graph.runner import _parse_text_table_for_event
+        from superset.ai.streaming.manager import AiStreamManager
+
+        summary = state.get("query_result_summary") or {}
+        insight = summary.get("insight") if isinstance(summary, dict) else None
+
+        schema_summary = state.get("schema_summary") or {}
+        preview_data: dict[str, Any] = {
+            "viz_type": chart_plan.get("viz_type", "table"),
+            "slice_name": chart_plan.get("slice_name", ""),
+            "semantic_params": chart_plan.get("semantic_params", {}),
+            "form_data": form_data,
+            "datasource_id": schema_summary.get("datasource_id", 0),
+            "insight": insight,
+            "suggest_questions": state.get("suggest_questions") or [],
+            "chart_index": (state.get("chart_intent") or {}).get("chart_index", 0),
+        }
+
+        # Attach parsed query result (columns + rows) so the frontend
+        # can render an inline preview without a separate data_analyzed event.
+        query_raw = state.get("query_result_raw", "")
+        if query_raw:
+            parsed = _parse_text_table_for_event(query_raw)
+            if parsed:
+                preview_data["columns"] = parsed["columns"]
+                preview_data["rows"] = parsed["rows"]
+                preview_data["row_count"] = len(parsed["rows"])
+
+        AiStreamManager().publish_event(
+            channel_id,
+            AgentEvent(type="chart_preview", data=preview_data),
+        )
+    except Exception as exc:
+        logger.debug("_publish_chart_preview failed: %s", exc)
+
+
 # ── Prompts ─────────────────────────────────────────────────────────
 
 PLAN_QUERY_PROMPT = """\
@@ -726,7 +773,7 @@ def select_chart(
 
 def normalize_chart_params(
     state: SingleChartState,
-) -> Command[Literal["create_chart", "repair_chart_params"]]:
+) -> Command[Literal["create_chart", "repair_chart_params", "__end__"]]:
     if state.get("repair_attempts", 0) >= _MAX_REPAIR_ATTEMPTS:
         return Command(
             update={
@@ -767,11 +814,23 @@ def normalize_chart_params(
             schema_summary=summary,
             saved_metrics_lookup=saved_metrics,
         )
+        # Publish chart_preview event for inline rendering (no raw data)
+        _publish_chart_preview(state, form_data=form_data, chart_plan=chart_plan)
+
+        # Chart mode: skip create_chart — user saves via frontend preview
+        # Dashboard mode: still run create_chart (dashboard needs chart IDs)
+        skip_create = state.get("skip_create_chart", False)
         return Command(
             update={"chart_form_data": form_data, "last_error": None},
-            goto="create_chart",
+            goto="__end__" if skip_create else "create_chart",
         )
     except ValueError as exc:
+        logger.warning(
+            "normalize_chart_params failed (attempt %d): %s | chart_plan=%s",
+            state.get("repair_attempts", 0) + 1,
+            exc,
+            json.dumps(chart_plan, ensure_ascii=False)[:500],
+        )
         repair_count = state.get("repair_attempts", 0) + 1
         _publish_retry(
             state,

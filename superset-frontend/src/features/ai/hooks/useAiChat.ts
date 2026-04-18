@@ -23,12 +23,13 @@ import type {
   AiChatMessage,
   AiStep,
   ChartResult,
+  ChartPreviewData,
   DashboardResult,
   ClarifyState,
   AnalysisPlanData,
   SqlQueryResult,
 } from '../types';
-import { sendChat, fetchEvents } from '../api/aiClient';
+import { sendChat, fetchEvents, savePreviewAsChart } from '../api/aiClient';
 
 const POLL_INTERVAL_MS = 500;
 const MAX_POLL_ATTEMPTS = 360; // 180 seconds
@@ -186,31 +187,35 @@ export function useAiChat(
         // StateGraph path: no text_chunk events, generate summary from results
         const charts = chartResultsRef.current;
         const dash = dashboardResultRef.current;
-        if (charts.length > 0 || dash) {
-          const lines: string[] = [];
-          if (dash) {
-            lines.push(`仪表板 "${dash.dashboardTitle}" 创建成功！`);
-            lines.push(`${dash.chartCount} 张图表已添加。`);
-            lines.push(`[打开仪表板](${dash.dashboardUrl})`);
-          } else if (charts.length === 1) {
-            lines.push(`图表 "${charts[0].sliceName}" 创建成功！`);
-            lines.push(`[查看图表](${charts[0].exploreUrl})`);
-          } else {
-            lines.push(`${charts.length} 张图表创建成功：`);
-            charts.forEach(c => {
-              lines.push(`- [${c.sliceName}](${c.exploreUrl}) (${c.vizType})`);
-            });
+        // Read hasPreviews from latest msgs state (avoids stale-closure on messages)
+        setMessages(msgs => {
+          const hasPreviews = msgs.some(
+            m => m.role === 'assistant' && (m.chartPreviews?.length ?? 0) > 0,
+          );
+          if ((charts.length > 0 || dash) && !hasPreviews) {
+            const lines: string[] = [];
+            if (dash) {
+              lines.push(`仪表板 "${dash.dashboardTitle}" 创建成功！`);
+              lines.push(`${dash.chartCount} 张图表已添加。`);
+              lines.push(`[打开仪表板](${dash.dashboardUrl})`);
+            } else if (charts.length === 1) {
+              lines.push(`图表 "${charts[0].sliceName}" 创建成功！`);
+              lines.push(`[查看图表](${charts[0].exploreUrl})`);
+            } else {
+              lines.push(`${charts.length} 张图表创建成功：`);
+              charts.forEach(c => {
+                lines.push(`- [${c.sliceName}](${c.exploreUrl}) (${c.vizType})`);
+              });
+            }
+            return [...msgs, createAssistantMessage(lines.join('\n'), finalSteps)];
           }
-          setMessages(msgs => [
-            ...msgs,
-            createAssistantMessage(lines.join('\n'), finalSteps),
-          ]);
-        } else if (latestSqlResultRef.current) {
-          setMessages(msgs => [
-            ...msgs,
-            createAssistantMessage('', finalSteps),
-          ]);
-        }
+          // Preview-only or sql-result-only: append empty assistant message to
+          // carry over finalSteps (shows step history in the bubble).
+          if (hasPreviews || latestSqlResultRef.current) {
+            return [...msgs, createAssistantMessage('', finalSteps)];
+          }
+          return msgs;
+        });
       }
       streamingTextRef.current = '';
       setStreamingText('');
@@ -297,20 +302,83 @@ export function useAiChat(
                       (event.data.statistics as Record<string, string>) ||
                       undefined,
                   };
-                  setMessages(prev =>
-                    prev.map((msg, i) =>
-                      i === prev.length - 1 && msg.role === 'assistant'
+                  const sq =
+                    (event.data.suggest_questions as string[]) || undefined;
+                  setMessages(prev => {
+                    const last = prev[prev.length - 1];
+                    if (last?.role === 'assistant') {
+                      return prev.map((msg, i) =>
+                        i === prev.length - 1
+                          ? { ...msg, queryResult: qr, suggestQuestions: sq }
+                          : msg,
+                      );
+                    }
+                    // No assistant message yet — create one for the preview data
+                    return [
+                      ...prev,
+                      {
+                        role: 'assistant' as const,
+                        content: '',
+                        timestamp: Date.now(),
+                        queryResult: qr,
+                        suggestQuestions: sq,
+                      },
+                    ];
+                  });
+                }
+                break;
+              }
+              case 'chart_preview': {
+                const preview: ChartPreviewData = {
+                  vizType: (event.data.viz_type as string) || 'table',
+                  sliceName: (event.data.slice_name as string) || '',
+                  semanticParams:
+                    (event.data.semantic_params as Record<string, unknown>) ||
+                    {},
+                  formData:
+                    (event.data.form_data as Record<string, unknown>) || {},
+                  datasourceId: (event.data.datasource_id as number) ?? 0,
+                  insight: (event.data.insight as string) || undefined,
+                  suggestQuestions:
+                    (event.data.suggest_questions as string[]) || undefined,
+                  chartIndex: (event.data.chart_index as number) ?? 0,
+                  columns:
+                    (event.data.columns as SqlQueryResult['columns']) ||
+                    undefined,
+                  rows:
+                    (event.data.rows as SqlQueryResult['rows']) || undefined,
+                  row_count: (event.data.row_count as number) || undefined,
+                };
+                setMessages(prev => {
+                  const last = prev[prev.length - 1];
+                  if (last?.role === 'assistant') {
+                    return prev.map((msg, i) =>
+                      i === prev.length - 1
                         ? {
                             ...msg,
-                            queryResult: qr,
-                            suggestQuestions:
-                              (event.data.suggest_questions as string[]) ||
-                              undefined,
+                            chartPreviews: [
+                              ...(msg.chartPreviews || []),
+                              preview,
+                            ],
                           }
                         : msg,
-                    ),
-                  );
-                }
+                    );
+                  }
+                  return [
+                    ...prev,
+                    {
+                      role: 'assistant' as const,
+                      content: '',
+                      timestamp: Date.now(),
+                      chartPreviews: [preview],
+                    },
+                  ];
+                });
+                addStep(
+                  `图表预览: ${preview.sliceName}`,
+                  'done',
+                  'chart_preview',
+                );
                 break;
               }
               case 'chart_created': {
@@ -563,6 +631,15 @@ export function useAiChat(
     setClarifyState(null);
   }, []);
 
+  const saveChart = useCallback(
+    async (preview: ChartPreviewData): Promise<void> => {
+      const chart = await savePreviewAsChart(preview);
+      chartResultsRef.current = [...chartResultsRef.current, chart];
+      setChartResults(prev => [...prev, chart]);
+    },
+    [],
+  );
+
   return {
     messages,
     loading,
@@ -578,5 +655,6 @@ export function useAiChat(
     answerClarify,
     dismissClarify,
     analysisPlan,
+    saveChart,
   };
 }

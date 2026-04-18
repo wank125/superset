@@ -141,6 +141,7 @@ class SingleChartState(TypedDict, total=False):
     database_id: int
     request_id: str
     channel_id: str  # Redis stream channel for retrying events
+    skip_create_chart: bool  # True = preview-only mode (no auto-save)
 
     # plan_query output
     sql_plan: dict[str, Any] | None

@@ -58,7 +58,69 @@ export type InlineChartType =
   | 'trend'
   | 'bar'
   | 'pie'
-  | 'table';
+  | 'table'
+  | 'iframe';
+
+/** Superset viz_types that require iframe-based native rendering. */
+export const IFRAME_VIZ_TYPES = new Set([
+  'echarts_timeseries_scatter',
+  'scatter',
+  'echarts_radar',
+  'radar',
+  'echarts_funnel',
+  'funnel',
+  'gauge',
+  'gauge_chart',
+  'echarts_area',
+  'echarts_timeseries_area',
+  'echarts_timeseries_step',
+  'echarts_timeseries_smooth',
+  'echarts_boxplot',
+  'box_plot',
+  'echarts_heatmap',
+  'heatmap',
+  'heatmap_v2',
+  'treemap',
+  'treemap_v2',
+  'sunburst',
+  'sunburst_v2',
+  'sankey',
+  'sankey_v2',
+  'waterfall',
+  'mixed_timeseries',
+  'graph_chart',
+  'echarts_tree',
+  'histogram',
+  'histogram_v2',
+  'pivot_table_v2',
+  'bubble_v2',
+]);
+
+export function shouldUseIframe(vizType: string): boolean {
+  return IFRAME_VIZ_TYPES.has(vizType);
+}
+
+/** Map Superset viz_type to local inline chart type. */
+export function mapVizTypeToLocal(viz: string): InlineChartType {
+  if (shouldUseIframe(viz)) return 'iframe';
+  if (
+    viz === 'big_number_total' ||
+    viz === 'big_number' ||
+    viz === 'stat_percent'
+  ) {
+    return 'kpi';
+  }
+  if (viz.includes('_line')) {
+    return 'trend';
+  }
+  if (viz.includes('_bar') || viz === 'dist_bar') {
+    return 'bar';
+  }
+  if (viz === 'pie' || viz === 'echarts_pie') {
+    return 'pie';
+  }
+  return 'table';
+}
 
 // ── Adapter ─────────────────────────────────────────────────────────
 

@@ -22,6 +22,7 @@ import { styled, t } from '@superset-ui/core';
 import type {
   AiChatMessage,
   AiStep,
+  ChartPreviewData,
   ChartResult,
   DashboardResult,
   ClarifyState,
@@ -49,6 +50,7 @@ interface AiWorkspaceContentProps {
   onClarifyAnswer?: (value: string) => void;
   onClarifyDismiss?: () => void;
   onSendMessage?: (message: string) => void;
+  onSaveChart?: (preview: ChartPreviewData) => Promise<void>;
 }
 
 const ContentArea = styled.div`
@@ -130,6 +132,7 @@ export function AiWorkspaceContent({
   onClarifyAnswer,
   onClarifyDismiss,
   onSendMessage,
+  onSaveChart,
 }: AiWorkspaceContentProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -163,6 +166,7 @@ export function AiWorkspaceContent({
                   ? onSendMessage
                   : undefined
               }
+              onSaveChart={onSaveChart}
             />
             {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
               <AiStepProgress steps={msg.steps} />

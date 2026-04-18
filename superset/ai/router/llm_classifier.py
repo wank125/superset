@@ -34,7 +34,8 @@ Agent types:
                Examples: "查销售额", "有多少个数据集", "我有哪些图表", "count users",
                "birth_names 有多少行", "我有什么权限"
 - "chart":     User explicitly wants to CREATE a chart visualization.
-               Examples: "画折线图", "做一个柱状图", "visualize trend as chart"
+               Examples: "画折线图", "做一个柱状图", "把这个数据画成图",
+                         "帮我可视化一下", "用图表展示", "把上面的结果做成柱状图"
 - "dashboard": User explicitly wants to CREATE a dashboard with multiple charts.
                Examples: "做一个仪表板", "create overview dashboard"
 

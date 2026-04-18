@@ -203,6 +203,8 @@ class LangChainAgentRunner(AgentRunner):
         )
         self._content_parts: list[str] = []
         self._sql_error_count: int = 0
+        self._loop_detected: bool = False
+        self._stream_repeat_detected: bool = False
 
     def run(self, message: str) -> Iterator[AgentEvent]:
         """Execute the agent and yield AgentEvent instances."""
@@ -211,6 +213,8 @@ class LangChainAgentRunner(AgentRunner):
         self._tool_guard.reset()
         self._content_parts = []
         self._sql_error_count = 0
+        self._loop_detected = False
+        self._stream_repeat_detected = False
         if self._order_guard is not None:
             self._order_guard.reset()
 
@@ -313,8 +317,18 @@ class LangChainAgentRunner(AgentRunner):
                     config=config,
                     stream_mode=["messages", "updates"],
                 ):
+                    if self._loop_detected:
+                        logger.warning(
+                            "Loop detected, breaking agent stream early"
+                        )
+                        break
                     for event in self._translate_event(mode, chunk):
                         buffered_events.append(event)
+
+                if self._loop_detected:
+                    # Loop guard already emitted an error event;
+                    # just break the retry loop without retrying.
+                    break
 
                 if callback.stopped:
                     buffered_events.append(AgentEvent(
@@ -373,7 +387,7 @@ class LangChainAgentRunner(AgentRunner):
         # Guard against Redis failures — a lost message is acceptable,
         # but an exception here would prevent the done event from being
         # emitted, leaving the client hanging.
-        full_response = "".join(self._content_parts)
+        full_response = _deduplicate_content(self._content_parts)
         if full_response:
             try:
                 memory.add_ai_message(full_response)
@@ -417,18 +431,42 @@ class LangChainAgentRunner(AgentRunner):
     def _handle_messages(self, chunk: Any) -> Iterator[AgentEvent]:  # noqa: C901
         """Handle 'messages' stream mode — text tokens and tool call chunks."""
         if not isinstance(chunk, tuple) or len(chunk) != 2:
+            # Debug: log unexpected chunk types
+            logger.debug(
+                "handle_messages: unexpected chunk type=%s",
+                type(chunk).__name__,
+            )
             return
 
         msg, _metadata = chunk
 
         if isinstance(msg, AIMessageChunk):
-            # Text content
+            # Text content — with streaming repetition guard
             if msg.content:
                 self._content_parts.append(msg.content)
-                yield AgentEvent(
-                    type="text_chunk",
-                    data={"content": msg.content},
-                )
+                if not self._stream_repeat_detected:
+                    full = "".join(self._content_parts)
+                    if len(full) > 600:
+                        mid = len(full) // 2
+                        second_half = full[mid:]
+                        first_half = full[:mid]
+                        # Use a 150-char probe for stability (shorter
+                        # fingerprints false-positive on structured text).
+                        probe_len = min(150, len(second_half))
+                        if len(second_half) >= probe_len:
+                            probe = second_half[:probe_len]
+                            if probe in first_half:
+                                self._stream_repeat_detected = True
+                                logger.warning(
+                                    "Stream repetition detected at %d chars, "
+                                    "suppressing further text_chunk events",
+                                    len(full),
+                                )
+                if not self._stream_repeat_detected:
+                    yield AgentEvent(
+                        type="text_chunk",
+                        data={"content": msg.content},
+                    )
 
         elif isinstance(msg, ToolMessage):
             # Tool execution result — advance order guard on success
@@ -502,15 +540,18 @@ class LangChainAgentRunner(AgentRunner):
                         if self._tool_guard.check(tool_name, args):
                             logger.warning(
                                 "Tool '%s' called %d times consecutively, "
-                                "injecting correction",
+                                "injecting correction. Last args: %s",
                                 tool_name,
                                 self._tool_guard._max,
+                                str(args)[:200],
                             )
+                            self._loop_detected = True
                             yield AgentEvent(
                                 type="error",
                                 data={
                                     "message": (
                                         f"工具 '{tool_name}' 重复调用过多，已跳过。"
+                                        "请尝试换一种方式描述你的问题。"
                                     ),
                                 },
                             )
@@ -533,11 +574,77 @@ class LangChainAgentRunner(AgentRunner):
                     # Final text response (no tool_calls) — local LLMs
                     # may deliver the answer here instead of streaming
                     # tokens via AIMessageChunk.
+                    # Skip if the same content was already streamed via
+                    # _handle_messages (detected by checking if content
+                    # is a suffix of accumulated content_parts).
+                    if self._content_parts:
+                        joined = "".join(self._content_parts)
+                        if msg.content in joined:
+                            continue  # already streamed
                     self._content_parts.append(msg.content)
                     yield AgentEvent(
                         type="text_chunk",
                         data={"content": msg.content},
                     )
+
+
+def _deduplicate_content(parts: list[str]) -> str:
+    """Remove repeated blocks from LLM output.
+
+    Local models sometimes repeat the same answer 2-4 times verbatim.
+    Strategy:
+    1. Detect whole-block repetition (suffix appears earlier in text).
+    2. Fall back to consecutive paragraph-level dedup.
+    """
+    if not parts:
+        return ""
+    full = "".join(parts)
+    text = full.strip()
+    n = len(text)
+    if n < 100:
+        return text
+
+    # --- Strategy 1: whole-block repetition ---
+    # Probe: take a fingerprint from the last portion and search for it
+    # in the first 60% of the text.  If found with a long enough match
+    # (>150 chars), the text from that point is a repeat.
+    probe = text[-min(200, n // 3):]
+    search_limit = n * 3 // 5
+    fp = probe[:150]
+    if len(fp) < 100:
+        fp = probe[:80]  # fallback for very short text
+    idx = text.find(fp, 0, search_limit)
+    if idx >= 0:
+        # The repeat boundary is somewhere around idx + len(probe).
+        # Walk backward to find a natural break (blank line or newline).
+        boundary = idx
+        # Try to snap to a nearby double-newline or newline
+        for offset in range(min(20, idx)):
+            pos = idx - offset
+            if pos > 0 and text[pos - 1:pos + 1] == "\n\n":
+                boundary = pos
+                break
+            if pos > 0 and text[pos - 1] == "\n":
+                boundary = pos
+                break
+        candidate = text[:boundary].rstrip()
+        if len(candidate) > 150:
+            logger.info(
+                "Block dedup: %d → %d chars", n, len(candidate),
+            )
+            return candidate
+
+    # --- Strategy 2: consecutive paragraph dedup ---
+    paragraphs = [p for p in text.split("\n\n") if p.strip()]
+    deduped: list[str] = []
+    for para in paragraphs:
+        if deduped and para.strip() == deduped[-1].strip():
+            continue
+        deduped.append(para)
+    result = "\n\n".join(deduped)
+    if len(result) < n:
+        logger.info("Paragraph dedup: %d → %d chars", n, len(result))
+    return result
 
 
 def _is_connection_pool_error(content: Any) -> bool:

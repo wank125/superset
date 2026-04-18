@@ -23,6 +23,7 @@ import type { SqlQueryResult } from '../types';
 import {
   adaptQueryResult,
   inferChartType,
+  mapVizTypeToLocal,
   type InlineChartData,
 } from '../utils/chatMsgAdapter';
 import { KpiCard } from './charts/KpiCard';
@@ -30,6 +31,7 @@ import { TrendChart } from './charts/TrendChart';
 import { BarChart } from './charts/BarChart';
 import { PieChart } from './charts/PieChart';
 import { DataTable } from './charts/DataTable';
+import { IframeChart } from './charts/IframeChart';
 import { SuggestQuestions } from './SuggestQuestions';
 
 interface AiInlineChartProps {
@@ -37,10 +39,18 @@ interface AiInlineChartProps {
   result: SqlQueryResult;
   /** Optional insight text from the LLM. */
   insight?: string;
+  /** Agent-suggested viz_type, takes priority over auto-inference. */
+  vizTypeHint?: string;
   /** Suggested follow-up questions. */
   suggestQuestions?: string[];
   /** Callback when user clicks a suggested question. */
   onSuggestQuestion?: (q: string) => void;
+  /** Chart form_data (required for iframe-rendered chart types). */
+  formData?: Record<string, unknown>;
+  /** Datasource ID (required for iframe-rendered chart types). */
+  datasourceId?: number;
+  /** Saved chart ID (from chart_created event, optional). */
+  chartId?: number;
 }
 
 const EmptyBox = styled.div`
@@ -63,15 +73,22 @@ const InsightText = styled.div`
 export function AiInlineChart({
   result,
   insight,
+  vizTypeHint,
   suggestQuestions,
   onSuggestQuestion,
+  formData,
+  datasourceId,
+  chartId,
 }: AiInlineChartProps) {
   const data: InlineChartData = useMemo(
     () => adaptQueryResult(result),
     [result],
   );
 
-  const chartType = useMemo(() => inferChartType(data), [data]);
+  const chartType = useMemo(
+    () => (vizTypeHint ? mapVizTypeToLocal(vizTypeHint) : inferChartType(data)),
+    [data, vizTypeHint],
+  );
 
   if (!data.rows.length) {
     return <EmptyBox>No data returned</EmptyBox>;
@@ -79,6 +96,14 @@ export function AiInlineChart({
 
   return (
     <div>
+      {chartType === 'iframe' && formData != null && datasourceId != null ? (
+        <IframeChart
+          formData={formData}
+          vizType={vizTypeHint!}
+          datasourceId={datasourceId}
+          chartId={chartId}
+        />
+      ) : null}
       {chartType === 'kpi' && <KpiCard data={data} insight={insight} />}
       {chartType === 'trend' && <TrendChart data={data} />}
       {chartType === 'bar' && <BarChart data={data} />}

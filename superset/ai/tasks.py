@@ -225,14 +225,14 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                 ctx = ConversationContext(user_id=user_id, session_id=session_id)
                 ctx.add_message("user", message)
 
-                if not is_creation_confirmed(message):
-                    target = "图表" if agent_type == "chart" else "仪表板"
+                # Chart mode uses preview-only flow (no auto-create), so skip
+                # confirmation.  Dashboard mode still auto-creates, so keep the
+                # confirmation gate for safety.
+                if agent_type == "dashboard" and not is_creation_confirmed(message):
                     confirmation_message = (
-                        f"我可以帮你创建{target}，但需要你先确认。"
-                        f"我还没有执行任何创建操作。请回复“确认创建{target}”后我再继续。"
+                        "我可以帮你创建仪表板，但需要你先确认。"
+                        "我还没有执行任何创建操作。请回复"确认创建仪表板"后我再继续。"
                     )
-                    # Store the original request so the confirmation turn can
-                    # recover it without fragile history position traversal.
                     ctx.add_tool_summary("original_request", message)
                     stream.publish_event(
                         channel_id,
@@ -248,9 +248,8 @@ def run_agent_task(kwargs: dict[str, Any]) -> str:
                     ctx.add_message("assistant", confirmation_message)
                     logger.info(
                         "creation_confirmation_required request_id=%s "
-                        "agent_type=%s session_id=%s",
+                        "agent_type=dashboard session_id=%s",
                         channel_id,
-                        agent_type,
                         session_id,
                     )
                     return channel_id

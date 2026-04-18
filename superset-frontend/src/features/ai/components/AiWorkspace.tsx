@@ -186,6 +186,7 @@ function AiChatSession({
     clarifyState,
     answerClarify,
     dismissClarify,
+    saveChart,
   } = useAiChat(databaseId, agentType, sessionId, initialMessages);
 
   const handleSend = useCallback(
@@ -224,6 +225,7 @@ function AiChatSession({
         onClarifyAnswer={answerClarify}
         onClarifyDismiss={dismissClarify}
         onSendMessage={sendMessage}
+        onSaveChart={saveChart}
       />
       <AiWorkspaceInput
         onSend={handleSend}

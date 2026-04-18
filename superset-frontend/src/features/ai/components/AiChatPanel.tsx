@@ -169,6 +169,7 @@ export function AiChatPanel({
     clarifyState,
     answerClarify,
     dismissClarify,
+    saveChart,
   } = useAiChat(databaseId, agentType);
 
   const scrollToBottom = useCallback(() => {
@@ -260,9 +261,11 @@ export function AiChatPanel({
           <div key={idx}>
             <AiMessageBubble
               message={msg}
+              queryResult={msg.queryResult}
               onSuggestQuestion={
                 msg.role === 'assistant' ? sendMessage : undefined
               }
+              onSaveChart={saveChart}
             />
             {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
               <AiStepProgress steps={msg.steps} />

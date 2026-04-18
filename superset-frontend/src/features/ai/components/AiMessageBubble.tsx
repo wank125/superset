@@ -18,13 +18,15 @@
  */
 
 import { styled } from '@superset-ui/core';
-import type { AiChatMessage } from '../types';
+import type { AiChatMessage, ChartPreviewData } from '../types';
 import { AiMarkdown } from './AiMarkdown';
 import { AiInlineChart } from './AiInlineChart';
+import { AiChartPreview } from './AiChartPreview';
 
 interface AiMessageBubbleProps {
   message: AiChatMessage;
   onSuggestQuestion?: (question: string) => void;
+  onSaveChart?: (preview: ChartPreviewData) => Promise<void>;
 }
 
 const Bubble = styled.div<{ isUser: boolean }>`
@@ -59,21 +61,43 @@ const Bubble = styled.div<{ isUser: boolean }>`
     `}
 `;
 
-export function AiMessageBubble({ message, onSuggestQuestion }: AiMessageBubbleProps) {
+export function AiMessageBubble({
+  message,
+  onSuggestQuestion,
+  onSaveChart,
+}: AiMessageBubbleProps) {
   const isUser = message.role === 'user';
   return (
     <Bubble isUser={isUser}>
       <AiMarkdown content={message.content} />
-      {message.role === 'assistant' && message.queryResult && (
-        <div style={{ padding: '0 12px 8px' }}>
-          <AiInlineChart
-            result={message.queryResult}
-            insight={message.queryResult.insight}
-            suggestQuestions={message.suggestQuestions}
-            onSuggestQuestion={onSuggestQuestion}
-          />
-        </div>
-      )}
+      {/* Agent-driven chart previews (chart/dashboard mode) */}
+      {message.role === 'assistant' &&
+        message.chartPreviews &&
+        message.chartPreviews.length > 0 && (
+          <div style={{ padding: '0 12px 8px' }}>
+            {message.chartPreviews.map((preview, idx) => (
+              <AiChartPreview
+                key={idx}
+                preview={preview}
+                onSuggestQuestion={onSuggestQuestion}
+                onSave={onSaveChart}
+              />
+            ))}
+          </div>
+        )}
+      {/* Data assistant inline chart (data_assistant mode) */}
+      {message.role === 'assistant' &&
+        message.queryResult &&
+        !message.chartPreviews?.length && (
+          <div style={{ padding: '0 12px 8px' }}>
+            <AiInlineChart
+              result={message.queryResult}
+              insight={message.queryResult.insight}
+              suggestQuestions={message.suggestQuestions}
+              onSuggestQuestion={onSuggestQuestion}
+            />
+          </div>
+        )}
     </Bubble>
   );
 }

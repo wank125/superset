@@ -64,7 +64,11 @@ def _build_single_chart_subgraph() -> StateGraph:
     return b.compile()
 
 
-def _make_subgraph_wrapper(subgraph: Any) -> Any:  # noqa: C901
+def _make_subgraph_wrapper(
+    subgraph: Any,
+    *,
+    skip_create_chart: bool = False,
+) -> Any:  # noqa: C901
     """Create a wrapper function that maps parent state to child state and back.
 
     The wrapper:
@@ -118,6 +122,7 @@ def _make_subgraph_wrapper(subgraph: Any) -> Any:  # noqa: C901
             "database_id": state["database_id"],
             "request_id": state.get("request_id", ""),
             "channel_id": state.get("channel_id", ""),
+            "skip_create_chart": skip_create_chart,
             "repair_attempts": 0,
             "sql_attempts": 0,
         }
@@ -281,18 +286,15 @@ def build_chart_graph(checkpointer: Any = None) -> Any:
     from superset.ai.graph import nodes_parent as parent
 
     subgraph = _build_single_chart_subgraph()
-    subgraph_node = _make_subgraph_wrapper(subgraph)
+    subgraph_node = _make_subgraph_wrapper(subgraph, skip_create_chart=True)
 
     b = StateGraph(DashboardState)
-    # Database auto-selection
     b.add_node("select_database", parent.select_database)
-    # Phase 14: chart modification nodes
     b.add_node("check_schema", parent.check_schema)
     b.add_node("classify_intent", parent.classify_intent)
     b.add_node("load_existing_chart", parent.load_existing_chart)
     b.add_node("apply_chart_modification", parent.apply_chart_modification)
     b.add_node("update_chart", parent.update_chart)
-    # Existing nodes
     b.add_node("parse_request", parent.parse_request)
     b.add_node("search_dataset", parent.search_dataset)
     b.add_node("select_dataset", parent.select_dataset)
@@ -301,9 +303,7 @@ def build_chart_graph(checkpointer: Any = None) -> Any:
     b.add_node("plan_dashboard", parent.plan_dashboard)
     b.add_node("review_analysis", parent.review_analysis)
     b.add_node("single_chart_subgraph", subgraph_node)
-    b.add_node(
-        "after_subgraph", _after_subgraph_chart
-    )
+    b.add_node("after_subgraph", _after_subgraph_chart)
 
     b.add_edge(START, "select_database")
     return b.compile(checkpointer=checkpointer)

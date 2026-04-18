@@ -29,6 +29,7 @@ export type AgentEventType =
   | 'insight_generated'
   | 'chart_created'
   | 'chart_updated'
+  | 'chart_preview'
   | 'dashboard_created'
   | 'error_fixed'
   | 'intent_routed'
@@ -50,6 +51,8 @@ export interface AiChatMessage {
   steps?: AiStep[];
   /** Inline chart data from data_analyzed event. */
   queryResult?: SqlQueryResult;
+  /** Agent-driven chart previews with viz_type + form_data. */
+  chartPreviews?: ChartPreviewData[];
   /** Suggested follow-up questions. */
   suggestQuestions?: string[];
 }
@@ -133,6 +136,22 @@ export interface SqlQueryResult {
   insight?: string;
   /** Period-over-period statistics, e.g. { "环比": "+5.2%", "同比": "+12.3%" } */
   statistics?: Record<string, string>;
+}
+
+/** Chart preview data from chart_preview event (viz_type + form_data + query rows). */
+export interface ChartPreviewData {
+  vizType: string;
+  sliceName: string;
+  semanticParams: Record<string, unknown>;
+  formData: Record<string, unknown>;
+  datasourceId: number;
+  insight?: string;
+  suggestQuestions?: string[];
+  chartIndex: number;
+  /** Parsed query result columns + rows for inline chart rendering. */
+  columns?: SqlQueryResult['columns'];
+  rows?: SqlQueryResult['rows'];
+  row_count?: number;
 }
 
 /** Phase 19a: structured analysis plan for user confirmation. */

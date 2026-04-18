@@ -192,6 +192,21 @@ def _was_plan_published(history: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _read_dataset_context(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Read the most recent dataset_context tool_summary from conversation history."""
+    for entry in reversed(history[-10:]):
+        if (
+            entry.get("role") == "tool_summary"
+            and entry.get("tool") == "dataset_context"
+            and entry.get("content")
+        ):
+            try:
+                return json.loads(entry["content"])
+            except (ValueError, KeyError):
+                pass
+    return None
+
+
 def _normalize_preferred_viz(value: Any) -> str | None:
     """Normalize model/user chart aliases to supported Superset viz_type values."""
     if not value:
@@ -218,10 +233,35 @@ def _normalize_preferred_viz(value: Any) -> str | None:
         "kpi": "big_number_total",
         "大数字": "big_number_total",
         "timeseries": "echarts_timeseries_line",
-        "scatter": "echarts_scatter",
-        "散点图": "echarts_scatter",
+        "scatter": "echarts_timeseries_scatter",
+        "散点图": "echarts_timeseries_scatter",
+        "scatter_plot": "echarts_timeseries_scatter",
         "radar": "radar",
         "雷达图": "radar",
+        "funnel": "funnel",
+        "漏斗图": "funnel",
+        "gauge": "gauge_chart",
+        "仪表盘": "gauge_chart",
+        "treemap": "treemap_v2",
+        "矩形树图": "treemap_v2",
+        "sunburst": "sunburst_v2",
+        "旭日图": "sunburst_v2",
+        "histogram": "histogram_v2",
+        "直方图": "histogram_v2",
+        "waterfall": "waterfall",
+        "瀑布图": "waterfall",
+        "heatmap": "heatmap_v2",
+        "热力图": "heatmap_v2",
+        "boxplot": "box_plot",
+        "箱线图": "box_plot",
+        "pivot_table": "pivot_table_v2",
+        "透视表": "pivot_table_v2",
+        "bubble": "bubble_v2",
+        "气泡图": "bubble_v2",
+        "sankey": "sankey_v2",
+        "桑基图": "sankey_v2",
+        "network": "graph_chart",
+        "网络图": "graph_chart",
     }
     normalized = aliases.get(raw, raw)
 
@@ -722,6 +762,15 @@ def parse_request(
             f"{', '.join(available_tables)}"
         )
 
+    # Cross-mode context: reuse dataset from previous data_assistant turn
+    dataset_ctx = _read_dataset_context(state.get("conversation_history") or [])
+    if dataset_ctx:
+        context_block += (
+            f"\nPrevious query used table: {dataset_ctx['table_name']}"
+            f"\nPrevious SQL: {dataset_ctx.get('sql', '')[:200]}"
+            f"\nPrefer reusing this table unless user explicitly mentions a different one."
+        )
+
     prompt = PARSE_PROMPT.format(
         request=state["request"][:500],
         context=context_block,
@@ -815,7 +864,30 @@ def search_dataset(
         database_id=state["database_id"],
         schema_name=state.get("schema_name"),
     )
+
+    # Cross-mode shortcut: if a dataset_context exists from a previous
+    # data_assistant turn and the user hasn't named a different table,
+    # try to directly resolve the context table to skip the full search.
+    dataset_ctx = _read_dataset_context(state.get("conversation_history") or [])
     target = state.get("goal", {}).get("target_table", "")
+
+    if dataset_ctx and (
+        not target or target.lower() == dataset_ctx["table_name"].lower()
+    ):
+        result_str = tool.run({"table_name": dataset_ctx["table_name"]})
+        try:
+            result = json.loads(result_str)
+            if result.get("status") == "found":
+                logger.info(
+                    "search_dataset: reusing context table %s",
+                    dataset_ctx["table_name"],
+                )
+                return Command(
+                    update={"dataset_candidates": [result]},
+                    goto="select_dataset",
+                )
+        except Exception:
+            pass  # Fall through to normal search
     if not target:
         # No table name extracted — try to search by a keyword from the request
         target = state["request"][:50]

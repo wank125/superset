@@ -351,12 +351,12 @@ CATALOG: dict[str, ChartTypeDescriptor] = {
         not_for=["时间趋势（用折线）", "占比分析"],
         params=[
             ParamDescriptor(name="x_axis", type="string", required=True, description="X轴列名"),
-            ParamDescriptor(name="metrics", type="metric_array", required=True, description="数值指标列表"),
+            ParamDescriptor(name="metric", type="metric", required=True, description="数值指标"),
         ],
-        example_form_data={"x_axis": "category", "metrics": ["SUM(value)"]},
-        uses_metric_singular=False,
+        example_form_data={"x_axis": "category", "metric": "SUM(value)"},
+        uses_metric_singular=True,
         requires_time_column=False,
-        max_groupby_dimensions=0,
+        max_groupby_dimensions=1,
     ),
     # ── 关系类 ──────────────────────────────────────────────
     "sankey_v2": ChartTypeDescriptor(

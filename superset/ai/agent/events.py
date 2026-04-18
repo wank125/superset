@@ -38,6 +38,7 @@ EventType = Literal[
     "error_fixed",
     "intent_routed",
     "clarify",        # Phase 17: ask user for missing info (dataset, etc.)
+    "chart_preview",  # Inline chart preview with viz_type + form_data (no rows)
     "done",
     "error",
 ]

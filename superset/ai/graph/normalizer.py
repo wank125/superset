@@ -248,6 +248,10 @@ def _build_metric_object(  # noqa: C901
         if "num" in column_lookup:
             metric_val = "SUM(num)"
 
+    # If raw column name, auto-wrap with SUM()
+    if metric_val in column_lookup:
+        metric_val = f"SUM({metric_val})"
+
     # Try to parse "AGG(column)" format
     match = _AGG_EXPR_RE.match(metric_val)
     if not match:

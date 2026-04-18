@@ -70,6 +70,17 @@ def get_langchain_llm() -> ChatOpenAI:
     model_name = cfg.get("model", "gpt-4o")
     llm_cls = GLMChatOpenAI if "glm" in model_name.lower() else ChatOpenAI
 
+    # repetition_penalty is a server-side setting for local LLM engines
+    # (vLLM, llama.cpp).  Not all OpenAI-compatible APIs support it as a
+    # request parameter, so we rely on the runner-level dedup instead.
+    model_kwargs: dict[str, Any] = {
+        "parallel_tool_calls": False,
+    }
+    # Only add frequency_penalty if explicitly configured (> 0)
+    freq_pen = cfg.get("frequency_penalty", 0.0)
+    if freq_pen:
+        model_kwargs["frequency_penalty"] = freq_pen
+
     return llm_cls(
         model=model_name,
         api_key=api_key,
@@ -77,7 +88,5 @@ def get_langchain_llm() -> ChatOpenAI:
         temperature=cfg.get("temperature", 0.0),
         max_tokens=cfg.get("max_tokens", 4096),
         streaming=True,
-        model_kwargs={
-            "parallel_tool_calls": False,
-        },
+        model_kwargs=model_kwargs,
     )

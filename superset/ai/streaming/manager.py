@@ -92,7 +92,7 @@ class AiStreamManager:
         if self._cache is None:
             return []
         name = self._stream_name(channel_id)
-        start = _increment_id(last_id) if last_id else "-"
+        start = _increment_id(last_id) if last_id else "0-0"
         raw = self._cache.xrange(name, start, "+", 100)
         results: list[tuple[str, AgentEvent]] = []
         for event_id, event_data in raw:
@@ -118,11 +118,25 @@ class AiStreamManager:
 
 
 def _increment_id(event_id: str) -> str:
-    """Increment a Redis stream ID to read the next event after it."""
-    if event_id == "0":
-        return "-"
+    """Increment a Redis stream ID to read the next event after it.
+
+    Redis xrange semantics:
+    - "-" means the minimum possible ID (start of stream, reads everything)
+    - "0-0" is the true minimum stream ID — also reads from the start,
+      but expressed as a real ID so callers can advance past it.
+
+    When last_id is "0" (the client's initial sentinel, not a real Redis ID),
+    we use "0-0" so the first poll reads from the genuine beginning of the
+    stream.  Subsequent polls use the last received event's real ID + 1, so
+    events are never re-delivered.
+    """
+    if event_id in ("0", ""):
+        # Initial poll — read from the very beginning of the stream.
+        # "0-0" means: deliver from the first real entry onward.
+        return "0-0"
     try:
         ts, seq = event_id.split("-")
         return f"{ts}-{int(seq) + 1}"
     except (ValueError, AttributeError):
-        return "-"
+        # Malformed ID — fall back to stream start (safer than silently dropping).
+        return "0-0"
