@@ -90,7 +90,6 @@ import {
 import { Icons } from '@superset-ui/core/components/Icons';
 import { findPermission } from 'src/utils/findPermission';
 import { ensureAppRoot } from 'src/utils/pathUtils';
-import { sendChat, fetchEvents } from 'src/features/ai/api/aiClient';
 import ExploreCtasResultsButton from '../ExploreCtasResultsButton';
 import ExploreResultsButton from '../ExploreResultsButton';
 import HighlightedSql from '../HighlightedSql';
@@ -176,149 +175,6 @@ const ROWS_CHIP_WIDTH = 100;
 const GAP = 8;
 
 const extensionsRegistry = getExtensionsRegistry();
-
-/** Extract SQL code block from AI response text */
-function extractSqlFromResponse(text: string): string | null {
-  const match = text.match(/```sql\s*\n([\s\S]*?)```/);
-  return match ? match[1].trim() : null;
-}
-
-/** AI-powered SQL error fix section */
-const AiFixSection = ({
-  sql,
-  errorMessage,
-  dbId,
-  onApplySql,
-}: {
-  sql: string;
-  errorMessage: string;
-  dbId: number;
-  onApplySql: (sql: string) => void;
-}) => {
-  const [fixing, setFixing] = useState(false);
-  const [fixedSql, setFixedSql] = useState<string | null>(null);
-  const [aiMessage, setAiMessage] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
-
-  const handleFix = useCallback(async () => {
-    setFixing(true);
-    setError(null);
-    setAiMessage('');
-    setFixedSql(null);
-
-    const message = `The following SQL query failed with an error. Please diagnose and fix it.\n\nSQL:\n\`\`\`sql\n${sql}\n\`\`\`\n\nError: ${errorMessage}`;
-
-    try {
-      const { channel_id: channelId } = await sendChat({
-        message,
-        database_id: dbId,
-        agent_type: 'debug',
-      });
-
-      let lastId = '0';
-      let fullText = '';
-      let attempts = 0;
-      const maxAttempts = 120;
-
-      // Poll for events
-      // eslint-disable-next-line no-constant-condition
-      while (attempts < maxAttempts) {
-        // eslint-disable-next-line no-await-in-loop
-        const response = await fetchEvents(channelId, lastId);
-        for (const event of response.events) {
-          if (event.type === 'text_chunk' && event.data.content) {
-            fullText += event.data.content as string;
-          }
-          if (event.type === 'error') {
-            setError((event.data.message as string) || 'AI debug failed');
-            setFixing(false);
-            return;
-          }
-          if (event.type === 'done') {
-            setAiMessage(fullText);
-            const extracted = extractSqlFromResponse(fullText);
-            if (extracted) {
-              setFixedSql(extracted);
-            }
-            setFixing(false);
-            return;
-          }
-        }
-        lastId = response.last_id;
-        attempts += 1;
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      setError('AI debug timed out');
-      setFixing(false);
-    } catch (err) {
-      setError(`Failed to call AI: ${err}`);
-      setFixing(false);
-    }
-  }, [sql, errorMessage, dbId]);
-
-  const theme = useTheme();
-
-  return (
-    <div
-      css={css`
-        margin-top: ${theme.sizeUnit * 2}px;
-        padding: ${theme.sizeUnit * 2}px;
-        border: 1px solid ${theme.colorBorder};
-        border-radius: ${theme.borderRadiusLG}px;
-        background: ${theme.colorBgContainer};
-      `}
-    >
-      {fixing && (
-        <div
-          css={css`
-            display: flex;
-            align-items: center;
-            gap: ${theme.sizeUnit}px;
-          `}
-        >
-          <Loading position="normal" />
-          <span>{t('AI is analyzing the error...')}</span>
-        </div>
-      )}
-      {error && (
-        <Alert type="error" message={error} closable onClose={() => setError(null)} />
-      )}
-      {aiMessage && !fixing && (
-        <div>
-          <MonospaceDiv
-            css={css`
-              font-size: ${theme.fontSizeSM}px;
-              max-height: 200px;
-              overflow-y: auto;
-              margin-bottom: ${theme.sizeUnit * 2}px;
-            `}
-          >
-            {aiMessage}
-          </MonospaceDiv>
-          {fixedSql && (
-            <Button
-              buttonSize="small"
-              buttonStyle="primary"
-              onClick={() => onApplySql(fixedSql)}
-            >
-              <Icons.CheckOutlined iconSize="s" /> {t('Use this SQL')}
-            </Button>
-          )}
-        </div>
-      )}
-      {!fixing && !aiMessage && !error && (
-        <Button
-          buttonSize="small"
-          buttonStyle="secondary"
-          onClick={handleFix}
-        >
-          <Icons.ThunderboltOutlined iconSize="s" /> {t('AI Fix')}
-        </Button>
-      )}
-    </div>
-  );
-};
 
 const ResultSet = ({
   cache = false,
@@ -722,12 +578,6 @@ const ResultSet = ({
       .map(e => e.message || e)
       .filter(Boolean)
       .join('; ');
-    const showAiFix =
-      isFeatureEnabled(FeatureFlag.AI_AGENT) &&
-      isFeatureEnabled(FeatureFlag.AI_AGENT_DEBUG) &&
-      query.dbId &&
-      query.sql &&
-      onApplySql;
 
     return (
       <ResultlessStyles>
@@ -754,14 +604,6 @@ const ResultSet = ({
           </Button>
         ) : (
           trackingUrl
-        )}
-        {showAiFix && (
-          <AiFixSection
-            sql={query.sql}
-            errorMessage={errorMessages || t('Unknown error')}
-            dbId={query.dbId}
-            onApplySql={onApplySql}
-          />
         )}
       </ResultlessStyles>
     );

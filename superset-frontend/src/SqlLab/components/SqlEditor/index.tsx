@@ -67,7 +67,6 @@ import { Switch } from '@superset-ui/core/components/Switch';
 import { Menu, MenuItemType } from '@superset-ui/core/components/Menu';
 import { Icons } from '@superset-ui/core/components/Icons';
 import { detectOS } from 'src/utils/common';
-import AiChatDrawer from 'src/features/ai/components/AiChatDrawer';
 import {
   addNewQueryEditor,
   CtasEnum,
@@ -306,7 +305,6 @@ const SqlEditor: FC<Props> = ({
   const isActive = currentQueryEditorId === queryEditor.id;
   const [autorun, setAutorun] = useState(queryEditor.autorun);
   const [ctas, setCtas] = useState('');
-  const [aiChatOpen, setAiChatOpen] = useState(false);
   const [northPercent, setNorthPercent] = useState(
     queryEditor.northPercent || INITIAL_NORTH_PERCENT,
   );
@@ -884,18 +882,6 @@ const SqlEditor: FC<Props> = ({
               <span>
                 <ShareSqlLabQuery queryEditorId={queryEditor.id} />
               </span>
-              {isFeatureEnabled(FeatureFlag.AI_AGENT) && database?.id && (
-                <span>
-                  <Button
-                    buttonSize="xsmall"
-                    buttonStyle="link"
-                    onClick={() => setAiChatOpen(true)}
-                    tooltip={t('AI Assistant')}
-                  >
-                    <Icons.ThunderboltOutlined />
-                  </Button>
-                </span>
-              )}
               <Dropdown
                 popupRender={() => renderDropdown()}
                 trigger={['click']}
@@ -1130,23 +1116,6 @@ const SqlEditor: FC<Props> = ({
         <span>{t('Name')}</span>
         <Input placeholder={createModalPlaceHolder} onChange={ctasChanged} />
       </Modal>
-      {isFeatureEnabled(FeatureFlag.AI_AGENT) && database?.id && (
-        <AiChatDrawer
-          databaseId={database.id}
-          visible={aiChatOpen}
-          onClose={() => setAiChatOpen(false)}
-          onSqlGenerated={(sql: string) => {
-            dispatch(queryEditorSetSql(queryEditor, sql));
-            setAiChatOpen(false);
-          }}
-          onChartCreated={(_chartId: number, exploreUrl: string) => {
-            window.open(exploreUrl, '_blank');
-          }}
-          onDashboardCreated={(_dashboardId: number, dashboardUrl: string) => {
-            window.open(dashboardUrl, '_blank');
-          }}
-        />
-      )}
     </StyledSqlEditor>
   );
 };
