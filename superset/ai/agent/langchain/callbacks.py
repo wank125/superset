@@ -49,6 +49,11 @@ class SafeguardCallbackHandler(BaseCallbackHandler):
         self._turn_chars = 0
         self._turn_text = ""
         self._stopped = False
+        # GLM reasoning_content accumulator — populated via on_llm_new_token
+        # because LangGraph's stream_mode=["messages"] reconstructs
+        # AIMessageChunk objects, losing additional_kwargs injected by
+        # GLMChatOpenAI.
+        self._reasoning_parts: list[str] = []
 
     def on_llm_start(
         self,
@@ -60,6 +65,7 @@ class SafeguardCallbackHandler(BaseCallbackHandler):
         self._turn_chars = 0
         self._turn_text = ""
         self._stopped = False
+        self._reasoning_parts = []
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         """Check per-token safety limits."""
@@ -72,6 +78,21 @@ class SafeguardCallbackHandler(BaseCallbackHandler):
         chunk = kwargs.get("chunk")
         if chunk and hasattr(chunk, "tool_call_chunks") and chunk.tool_call_chunks:
             return
+
+        # Capture GLM reasoning_content from the callback chain.
+        # The chunk.message.additional_kwargs still has the
+        # reasoning_content injected by GLMChatOpenAI at this point,
+        # even though LangGraph's StreamMessagesHandler will lose it
+        # when reconstructing AIMessageChunk for stream_mode=["messages"].
+        if chunk and hasattr(chunk, "message"):
+            msg = chunk.message
+            reasoning = (
+                msg.additional_kwargs.get("reasoning_content")
+                if hasattr(msg, "additional_kwargs")
+                else None
+            )
+            if reasoning:
+                self._reasoning_parts.append(reasoning)
 
         self._turn_chars += len(token)
         self._turn_text += token
@@ -94,3 +115,19 @@ class SafeguardCallbackHandler(BaseCallbackHandler):
     def stopped(self) -> bool:
         """Whether the callback has triggered a safety stop."""
         return self._stopped
+
+    def get_and_clear_reasoning(self) -> str:
+        """Return accumulated reasoning_content and reset for next turn."""
+        full = "".join(self._reasoning_parts)
+        self._reasoning_parts = []
+        return full
+
+    def drain_reasoning(self) -> list[str]:
+        """Return new reasoning chunks since last drain and clear them.
+
+        Used by the runner to emit incremental thinking events in real-time
+        instead of batching everything until end of turn.
+        """
+        parts = self._reasoning_parts
+        self._reasoning_parts = []
+        return parts

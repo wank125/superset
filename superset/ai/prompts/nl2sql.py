@@ -79,6 +79,10 @@ suitability flags, one-line insight, statistics (环比/同比), and follow-up q
    - "分析", "趋势", "对比", "洞察", "insight", "trend" → `analyze_data`
    - `analyze_data` is heavier (uses an extra LLM call); prefer \
 `execute_sql` for straightforward data retrieval.
+10. **SQL error recovery** — when `execute_sql` returns a column/table not found \
+error, you MUST call `get_schema` or `search_datasets` to confirm the correct \
+schema before retrying. Never reuse the same failed SQL without first verifying \
+the structure.
 
 ## Output format
 - For lists: use numbered or bulleted items

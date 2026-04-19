@@ -306,7 +306,47 @@ class TestToolCallRepetitionGuard:
         assert not guard.check("execute_sql", {"sql": "select 1"})
         assert not guard.check("execute_sql", {"sql": "select 1"})
 
-    def test_tracked_tool_repeats_only_with_same_arguments(self):
+    def test_tracked_tool_repeats_only_with_errors(self):
+        from superset.ai.agent.langchain.guard import ToolCallRepetitionGuard
+
+        guard = ToolCallRepetitionGuard(
+            max_consecutive=3,
+            tracked_tools={"create_chart"},
+        )
+
+        # All errors → triggers on 3rd
+        assert not guard.check("create_chart", {"chart_type": "bar"})
+        guard.mark_result(error=True)
+        assert not guard.check("create_chart", {"chart_type": "bar"})
+        guard.mark_result(error=True)
+        assert guard.check("create_chart", {"chart_type": "bar"})
+        guard.mark_result(error=True)
+
+    def test_success_resets_repetition_counter(self):
+        from superset.ai.agent.langchain.guard import ToolCallRepetitionGuard
+
+        guard = ToolCallRepetitionGuard(
+            max_consecutive=3,
+            tracked_tools={"execute_sql"},
+        )
+
+        # 2 errors
+        assert not guard.check("execute_sql", {"sql": "SELECT 1"})
+        guard.mark_result(error=True)
+        assert not guard.check("execute_sql", {"sql": "SELECT 1"})
+        guard.mark_result(error=True)
+
+        # A success resets the error streak
+        assert not guard.check("execute_sql", {"sql": "SELECT 1"})
+        guard.mark_result(error=False)
+
+        # Back to 0 consecutive errors — should NOT trigger
+        assert not guard.check("execute_sql", {"sql": "SELECT 1"})
+        guard.mark_result(error=True)
+        assert not guard.check("execute_sql", {"sql": "SELECT 1"})
+        guard.mark_result(error=True)
+
+    def test_different_arguments_dont_accumulate(self):
         from superset.ai.agent.langchain.guard import ToolCallRepetitionGuard
 
         guard = ToolCallRepetitionGuard(
@@ -315,14 +355,31 @@ class TestToolCallRepetitionGuard:
         )
 
         assert not guard.check("create_chart", {"chart_type": "bar"})
+        guard.mark_result(error=True)
         assert not guard.check("create_chart", {"chart_type": "line"})
+        guard.mark_result(error=True)
         assert not guard.check("create_chart", {"chart_type": "bar"})
+
+    def test_reset_clears_history(self):
+        from superset.ai.agent.langchain.guard import ToolCallRepetitionGuard
+
+        guard = ToolCallRepetitionGuard(
+            max_consecutive=3,
+            tracked_tools={"create_chart"},
+        )
+
+        assert not guard.check("create_chart", {"chart_type": "bar"})
+        guard.mark_result(error=True)
+        assert not guard.check("create_chart", {"chart_type": "bar"})
+        guard.mark_result(error=True)
 
         guard.reset()
 
+        # After reset, starts fresh
         assert not guard.check("create_chart", {"chart_type": "bar"})
+        guard.mark_result(error=True)
         assert not guard.check("create_chart", {"chart_type": "bar"})
-        assert guard.check("create_chart", {"chart_type": "bar"})
+        guard.mark_result(error=True)
 
 
 class TestToolOrderGuard:

@@ -27,11 +27,12 @@ logger = logging.getLogger(__name__)
 
 
 class ToolCallRepetitionGuard:
-    """Detects consecutive repetitive tool calls.
+    """Detects consecutive repetitive tool calls that keep failing.
 
-    If the same tool is called consecutively with the same arguments more
-    than *max_consecutive* times, returns True to signal that a correction
-    should be injected.
+    Only counts calls whose result was an error. Successful calls reset
+    the repetition counter for that (tool, normalised_args) pair. This
+    prevents false positives when the agent legitimately runs the same
+    tool multiple times with different conditions and succeeds.
 
     For ``execute_sql``, uses SQL-aware normalisation (whitespace and
     case folding) so that trivially reformatted queries are treated as
@@ -47,25 +48,56 @@ class ToolCallRepetitionGuard:
         max_consecutive: int = 3,
         tracked_tools: set[str] | None = None,
     ) -> None:
-        self._history: list[tuple[str, str]] = []
+        self._history: list[tuple[str, str, bool]] = []
+        self._pending_call: tuple[str, str] | None = None
         self._max = max_consecutive
         self._tracked_tools = tracked_tools
 
     def check(self, tool_name: str, arguments: dict[str, Any] | None = None) -> bool:
-        """Record a tool call and return True if repetition limit exceeded."""
+        """Record a tool call and return True if error repetition limit exceeded.
+
+        Stores the call as pending until ``mark_result()`` is called with
+        the actual result. Only consecutive *errors* with the same
+        normalised arguments count toward the limit.
+        """
         if self._tracked_tools is not None and tool_name not in self._tracked_tools:
             return False
 
-        self._history.append((tool_name, self._normalize_arguments(arguments)))
-        if len(self._history) >= self._max:
-            tail = self._history[-self._max:]
-            if len(set(tail)) == 1:  # all same tool and same arguments
+        normalised = self._normalize_arguments(arguments)
+        self._pending_call = (tool_name, normalised)
+
+        # Count consecutive errors with same (tool, args).
+        # Include the current call in the count: we need max_consecutive - 1
+        # prior errors in history plus this call to trigger.
+        needed = self._max - 1
+        if len(self._history) >= needed and needed > 0:
+            tail = self._history[-needed:]
+            if all(
+                tool == tool_name
+                and args == normalised
+                and error
+                for tool, args, error in tail
+            ):
                 return True
+        elif self._max <= 1:
+            return True
         return False
+
+    def mark_result(self, error: bool) -> None:
+        """Mark the pending call's result (error=True / success=False).
+
+        Must be called after ``check()`` once the tool result is known.
+        If no call is pending (e.g. untracked tool), this is a no-op.
+        """
+        if self._pending_call is not None:
+            tool_name, normalised = self._pending_call
+            self._history.append((tool_name, normalised, error))
+            self._pending_call = None
 
     def reset(self) -> None:
         """Clear history (called at the start of each agent run)."""
         self._history.clear()
+        self._pending_call = None
 
     @staticmethod
     def _normalize_arguments(arguments: dict[str, Any] | None) -> str:

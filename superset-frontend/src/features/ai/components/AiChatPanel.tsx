@@ -147,6 +147,54 @@ const ErrorText = styled.div`
   font-size: 13px;
 `;
 
+const LiveResponseArea = styled.div`
+  margin: 8px 0;
+  border-radius: ${({ theme }) => theme.borderRadiusLG}px;
+  border: 1px solid ${({ theme }) => theme.colorPrimaryBorder};
+  background: ${({ theme }) => theme.colorBgContainer};
+  overflow: hidden;
+
+  @keyframes liveGlow {
+    0%,
+    100% {
+      border-color: ${({ theme }) => theme.colorPrimaryBorder};
+    }
+    50% {
+      border-color: ${({ theme }) => theme.colorPrimary};
+    }
+  }
+  animation: liveGlow 2s ease-in-out infinite;
+`;
+
+const LiveHeader = styled.div`
+  padding: 8px 12px;
+  font-size: 12px;
+  color: ${({ theme }) => theme.colorTextSecondary};
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid ${({ theme }) => theme.colorBorderSecondary};
+`;
+
+const LiveDot = styled.span`
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: ${({ theme }) => theme.colorPrimary};
+
+  @keyframes liveDot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+  animation: liveDot 1.5s ease-in-out infinite;
+`;
+
 export function AiChatPanel({
   databaseId,
   onSqlGenerated,
@@ -271,6 +319,9 @@ export function AiChatPanel({
       <MessagesContainer>
         {messages.map((msg, idx) => (
           <div key={idx}>
+            {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
+              <AiStepProgress steps={msg.steps} />
+            )}
             <AiMessageBubble
               message={msg}
               queryResult={msg.queryResult}
@@ -279,9 +330,6 @@ export function AiChatPanel({
               }
               onSaveChart={saveChart}
             />
-            {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
-              <AiStepProgress steps={msg.steps} />
-            )}
             {msg.role === 'assistant' && idx === messages.length - 1 && (
               <>
                 {agentType === 'data_assistant' && (
@@ -331,8 +379,8 @@ export function AiChatPanel({
             }}
           >
             <ResultLabel>{t('View Dashboard')}</ResultLabel>
-            {dashboardResult.dashboardTitle} (
-            {dashboardResult.chartCount} {t('charts')}) →
+            {dashboardResult.dashboardTitle} ({dashboardResult.chartCount}{' '}
+            {t('charts')}) →
           </ResultCard>
         )}
         {effectiveAgent === 'dashboard' &&
@@ -359,10 +407,19 @@ export function AiChatPanel({
               ))}
             </div>
           )}
-        {loading && steps.length > 0 && <AiStepProgress steps={steps} />}
-        {loading && streamingText && <AiStreamingText text={streamingText} />}
-        {loading && !streamingText && steps.length === 0 && (
-          <AiStreamingText text={t('Thinking...')} />
+        {loading && (
+          <LiveResponseArea>
+            <LiveHeader>
+              <LiveDot />
+              <span>{t('AI 正在思考...')}</span>
+            </LiveHeader>
+            {steps.length > 0 && <AiStepProgress steps={steps} isLive />}
+            {streamingText ? (
+              <AiStreamingText text={streamingText} />
+            ) : (
+              steps.length === 0 && <AiStreamingText text={t('Thinking...')} />
+            )}
+          </LiveResponseArea>
         )}
         {alertLoading && (
           <AiStreamingText text={t('Generating alert rule...')} />

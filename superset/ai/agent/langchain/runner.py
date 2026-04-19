@@ -91,6 +91,26 @@ _RETRYABLE_ERRORS: tuple[type[Exception], ...] = (
     TimeoutError,
 )
 
+# Events that represent agent progress — yielded immediately so the
+# frontend can display steps in real-time.  text_chunk events are
+# excluded because they may be partial output from a failed attempt.
+_PROGRESS_EVENT_TYPES = frozenset({
+    "thinking",
+    "tool_call",
+    "sql_generated",
+    "tool_result",
+    "tool_repair",
+    "data_analyzed",
+    "insight_generated",
+    "error",
+    "warning",
+})
+
+# Side-effect tools whose events must be buffered — if a retryable LLM
+# error occurs after the tool has executed, we cannot un-execute it, so
+# we delay publishing until the attempt is known to have succeeded.
+_SIDE_EFFECT_TOOLS = frozenset({"create_chart", "create_dashboard"})
+
 # Map agent_type strings to their BaseTool classes and constructor kwargs
 # Unified data assistant tools — merged from nl2sql + copilot
 _DATA_ASSISTANT_TOOLS: list[tuple[type[BaseTool], list[str]]] = [
@@ -214,6 +234,8 @@ class LangChainAgentRunner(AgentRunner):
         self._stream_repeat_detected: bool = False
         self._tool_args_by_id: dict[str, dict[str, Any]] = {}
         self._latest_tool_args_by_name: dict[str, dict[str, Any]] = {}
+        # Shared callback for safety limits + GLM reasoning capture
+        self._safeguard: SafeguardCallbackHandler | None = None
 
     def run(self, message: str) -> Iterator[AgentEvent]:
         """Execute the agent and yield AgentEvent instances."""
@@ -271,6 +293,7 @@ class LangChainAgentRunner(AgentRunner):
         )
 
         callback = SafeguardCallbackHandler()
+        self._safeguard = callback
         config: dict[str, Any] = {
             "configurable": {"session_id": self._session_id},
             "callbacks": [callback],
@@ -287,11 +310,13 @@ class LangChainAgentRunner(AgentRunner):
         self._sql_results: list[str] = []
 
         # Retry loop for transient LLM API failures (connection drops, timeouts).
-        # Events are buffered per-attempt so that a transient error discards
-        # partial results instead of sending duplicate events to the SSE stream.
+        # Progress events (tool_call, sql_generated, etc.) are yielded
+        # immediately so the frontend can display steps in real-time.
+        # Only text_chunk events are buffered — they are discarded on retry
+        # to avoid showing partial text from a failed attempt.
         max_retries = 2
         last_exc: Exception | None = None
-        buffered_events: list[AgentEvent] = []
+        text_buffer: list[AgentEvent] = []
 
         for attempt in range(1, max_retries + 1):
             try:
@@ -301,7 +326,7 @@ class LangChainAgentRunner(AgentRunner):
                 self._sql_error_count = 0
                 self._tool_args_by_id = {}
                 self._latest_tool_args_by_name = {}
-                buffered_events = []
+                text_buffer = []
                 callback._turn_chars = 0
                 callback._turn_text = ""
                 callback._stopped = False
@@ -334,7 +359,14 @@ class LangChainAgentRunner(AgentRunner):
                         )
                         break
                     for event in self._translate_event(mode, chunk):
-                        buffered_events.append(event)
+                        tool_name = event.data.get("tool", "")
+                        if (
+                            event.type in _PROGRESS_EVENT_TYPES
+                            and tool_name not in _SIDE_EFFECT_TOOLS
+                        ):
+                            yield event  # Real-time progress for read-only tools
+                        else:
+                            text_buffer.append(event)
                     if self._loop_detected or callback.stopped:
                         logger.warning(
                             "Safety stop detected after event translation, "
@@ -348,22 +380,22 @@ class LangChainAgentRunner(AgentRunner):
                     break
 
                 if callback.stopped:
-                    buffered_events.append(AgentEvent(
+                    yield AgentEvent(
                         type="error",
                         data={"message": "回复内容超出安全限制，已自动截断。"},
-                    ))
+                    )
                 last_exc = None
                 break  # success — exit retry loop
 
             except _RETRYABLE_ERRORS as exc:
                 last_exc = exc
-                # Discard partial events from failed attempt
+                # Discard partial text from failed attempt
                 logger.warning(
                     "LLM API transient error (attempt %d/%d): %s — "
-                    "discarding %d partial events",
-                    attempt, max_retries, exc, len(buffered_events),
+                    "discarding %d partial text events",
+                    attempt, max_retries, exc, len(text_buffer),
                 )
-                buffered_events = []
+                text_buffer = []
                 continue
 
             except GraphRecursionError:
@@ -371,19 +403,19 @@ class LangChainAgentRunner(AgentRunner):
                     "Agent hit recursion_limit=%d, returning partial result",
                     get_max_turns(),
                 )
-                buffered_events.append(AgentEvent(
+                yield AgentEvent(
                     type="warning",
                     data={"message": "问题较复杂，已用完处理步数。请尝试简化问题或分步提问。"},
-                ))
+                )
                 last_exc = None  # handled
                 break
 
             except Exception as exc:
                 logger.exception("LangChain agent execution failed")
-                buffered_events.append(AgentEvent(
+                yield AgentEvent(
                     type="error",
                     data={"message": f"处理出错：{format_user_facing_error(exc)}"},
-                ))
+                )
                 last_exc = None  # non-retryable, already handled
                 break
 
@@ -397,8 +429,8 @@ class LangChainAgentRunner(AgentRunner):
                 data={"message": "AI 服务暂时不可用，请稍后重试。"},
             )
         else:
-            # Yield buffered events from the successful (or partial) attempt
-            yield from buffered_events
+            # Yield buffered text events from the successful (or partial) attempt
+            yield from text_buffer
 
         # Persist assistant response to shared Redis key.
         # Guard against Redis failures — a lost message is acceptable,
@@ -434,6 +466,11 @@ class LangChainAgentRunner(AgentRunner):
     ) -> Iterator[AgentEvent]:
         """Translate LangGraph stream chunks into AgentEvent instances."""
         if mode == "messages":
+            # Emit any new GLM reasoning chunks before processing the
+            # message chunk.  This gives real-time thinking chain display
+            # instead of batching all reasoning until end of turn.
+            for event in self._drain_reasoning_events():
+                yield event
             result = self._handle_messages(chunk)
         elif mode == "updates":
             result = self._handle_updates(chunk)
@@ -444,6 +481,16 @@ class LangChainAgentRunner(AgentRunner):
         # that so ``yield from`` doesn't crash on NoneType.
         if result is not None:
             yield from result
+
+    def _drain_reasoning_events(self) -> Iterator[AgentEvent]:
+        """Emit incremental GLM reasoning_content as thinking events."""
+        if self._safeguard is None:
+            return
+        parts = self._safeguard.drain_reasoning()
+        if not parts:
+            return
+        full = "".join(parts)
+        yield AgentEvent(type="thinking", data={"content": full})
 
     def _handle_messages(self, chunk: Any) -> Iterator[AgentEvent]:  # noqa: C901
         """Handle 'messages' stream mode — text tokens and tool call chunks."""
@@ -498,6 +545,12 @@ class LangChainAgentRunner(AgentRunner):
                 self._persist_query_context(tool_name, msg, str(result))
             elif tool_name == "analyze_data" and result:
                 self._persist_query_context(tool_name, msg, str(result))
+            # Mark the pending guard call as error or success based on result
+            self._tool_guard.mark_result(
+                error=isinstance(result, str) and (
+                    result.startswith("Error") or result.startswith("SQL Error")
+                )
+            )
             yield AgentEvent(
                 type="tool_result",
                 data={
@@ -823,13 +876,13 @@ def _build_sql_repair_hint(error_msg: str, attempt: int) -> str | None:
         if re.search(pattern, error_msg, re.IGNORECASE):
             if category == "bad_column":
                 parts.append(
-                    "列名可能不正确。请先使用 get_schema 工具查看表结构，"
-                    "确认可用列名后再重写 SQL。"
+                    "[重要] 列名错误！必须先调用 get_schema 工具确认正确的列名，"
+                    "禁止直接重试相同 SQL。"
                 )
             elif category == "bad_table":
                 parts.append(
-                    "表名可能不正确。请先使用 search_datasets 或 get_schema "
-                    "工具查看可用的表。"
+                    "[重要] 表名错误！必须先调用 search_datasets 或 get_schema "
+                    "工具确认可用的表名，禁止直接重试相同 SQL。"
                 )
             elif category == "syntax":
                 parts.append(

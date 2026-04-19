@@ -82,6 +82,8 @@ export function useAiChat(
   // Track step labels to avoid duplicates
   const stepLabelsRef = useRef<Set<string>>(new Set());
   const stepsRef = useRef<AiStep[]>([]);
+  // Accumulate real-time thinking content into a single step
+  const thinkingTextRef = useRef('');
   // Track latest results via refs so finalize() can read them synchronously
   const chartResultsRef = useRef<ChartResult[]>([]);
   const dashboardResultRef = useRef<DashboardResult | null>(null);
@@ -157,6 +159,7 @@ export function useAiChat(
 
   const resetState = useCallback(() => {
     streamingTextRef.current = '';
+    thinkingTextRef.current = '';
     setStreamingText('');
     setSteps([]);
     stepsRef.current = [];
@@ -251,13 +254,42 @@ export function useAiChat(
               case 'thinking': {
                 const content = (event.data.content as string) || '';
                 if (content) {
-                  addStep(content, 'running', 'thinking');
+                  // Accumulate real-time reasoning fragments into one step
+                  thinkingTextRef.current += content;
+                  addStep(
+                    '💭 思考中...',
+                    'running',
+                    'thinking',
+                    thinkingTextRef.current,
+                  );
                 }
                 break;
               }
               case 'tool_call': {
                 const tool = (event.data.tool as string) || '';
-                addStep(`调用工具: ${tool}`, 'running', 'tool_call');
+                const args = (event.data.args as Record<string, unknown>) || {};
+                // Build detail summary from tool args
+                let detail: string | undefined;
+                if (args.sql && typeof args.sql === 'string') {
+                  detail =
+                    args.sql.length > 100
+                      ? `${args.sql.substring(0, 100)}...`
+                      : args.sql;
+                } else if (args.query && typeof args.query === 'string') {
+                  detail =
+                    args.query.length > 100
+                      ? `${args.query.substring(0, 100)}...`
+                      : args.query;
+                } else if (Object.keys(args).length > 0) {
+                  const summary = Object.entries(args)
+                    .map(([k, v]) => `${k}=${String(v).substring(0, 30)}`)
+                    .join(', ');
+                  detail =
+                    summary.length > 100
+                      ? `${summary.substring(0, 100)}...`
+                      : summary;
+                }
+                addStep(`调用工具: ${tool}`, 'running', 'tool_call', detail);
                 break;
               }
               case 'tool_result': {

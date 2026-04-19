@@ -115,6 +115,54 @@ const ChartListContainer = styled.div`
   gap: 4px;
 `;
 
+const LiveResponseArea = styled.div`
+  margin: 8px 0;
+  border-radius: ${({ theme }) => theme.borderRadiusLG}px;
+  border: 1px solid ${({ theme }) => theme.colorPrimaryBorder};
+  background: ${({ theme }) => theme.colorBgContainer};
+  overflow: hidden;
+
+  @keyframes liveGlow {
+    0%,
+    100% {
+      border-color: ${({ theme }) => theme.colorPrimaryBorder};
+    }
+    50% {
+      border-color: ${({ theme }) => theme.colorPrimary};
+    }
+  }
+  animation: liveGlow 2s ease-in-out infinite;
+`;
+
+const LiveHeader = styled.div`
+  padding: 8px 12px;
+  font-size: 12px;
+  color: ${({ theme }) => theme.colorTextSecondary};
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid ${({ theme }) => theme.colorBorderSecondary};
+`;
+
+const LiveDot = styled.span`
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: ${({ theme }) => theme.colorPrimary};
+
+  @keyframes liveDot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+  animation: liveDot 1.5s ease-in-out infinite;
+`;
+
 export function AiWorkspaceContent({
   messages,
   streamingText,
@@ -161,33 +209,51 @@ export function AiWorkspaceContent({
             <WelcomeSub>{t('选择数据库，输入你的问题开始对话')}</WelcomeSub>
           </WelcomeBlock>
         )}
-        {messages.map((msg, idx) => (
-          <div key={msg.timestamp}>
-            <AiMessageBubble
-              message={msg}
-              onSuggestQuestion={
-                msg.role === 'assistant' && onSendMessage
-                  ? onSendMessage
-                  : undefined
-              }
-              onSaveChart={onSaveChart}
-            />
-            {msg.role === 'assistant' && msg.steps && msg.steps.length > 0 && (
-              <AiStepProgress steps={msg.steps} />
-            )}
-            {msg.role === 'assistant' && idx === messages.length - 1 && (
-              <>
-                {effectiveAgent === 'data_assistant' &&
-                  !hasSqlBlock(msg.content) && (
-                    <AiSqlPreview
-                      sql={msg.content}
-                      onCopyToEditor={onSqlCopy}
-                    />
-                  )}
-              </>
-            )}
-          </div>
-        ))}
+        {messages.map((msg, idx) => {
+          // During loading, skip rendering the last assistant message if it has
+          // text content — it was added by finalize() just before setLoading(false)
+          // fires. In this brief intermediate render, the LiveResponseArea is still
+          // the authoritative live display. Showing the text here would cause
+          // "result above steps" because messages DOM is above LiveResponseArea DOM.
+          // Exception: always render chart previews / query results (from chart_preview
+          // / data_analyzed events) so they remain visible during multi-step flows.
+          const isLiveLastMsg =
+            loading &&
+            msg.role === 'assistant' &&
+            idx === messages.length - 1 &&
+            !!msg.content &&
+            !msg.chartPreviews?.length &&
+            !msg.queryResult;
+          if (isLiveLastMsg) return null;
+
+          return (
+            <div key={msg.timestamp}>
+              {msg.role === 'assistant' &&
+                msg.steps &&
+                msg.steps.length > 0 && <AiStepProgress steps={msg.steps} />}
+              <AiMessageBubble
+                message={msg}
+                onSuggestQuestion={
+                  msg.role === 'assistant' && onSendMessage
+                    ? onSendMessage
+                    : undefined
+                }
+                onSaveChart={onSaveChart}
+              />
+              {msg.role === 'assistant' && idx === messages.length - 1 && (
+                <>
+                  {effectiveAgent === 'data_assistant' &&
+                    !hasSqlBlock(msg.content) && (
+                      <AiSqlPreview
+                        sql={msg.content}
+                        onCopyToEditor={onSqlCopy}
+                      />
+                    )}
+                </>
+              )}
+            </div>
+          );
+        })}
         {/* Render global states (SQL Preview, ResultCards) outside the message loop */}
         {(effectiveAgent === 'chart' || effectiveAgent === 'dashboard') &&
           sqlPreview && (
@@ -225,8 +291,8 @@ export function AiWorkspaceContent({
             }}
           >
             <ResultLabel>{t('查看仪表板')}</ResultLabel>
-            {dashboardResult.dashboardTitle} (
-            {dashboardResult.chartCount} {t('张图表')}) →
+            {dashboardResult.dashboardTitle} ({dashboardResult.chartCount}{' '}
+            {t('张图表')}) →
           </ResultCard>
         )}
         {effectiveAgent === 'dashboard' &&
@@ -250,10 +316,19 @@ export function AiWorkspaceContent({
               ))}
             </ChartListContainer>
           )}
-        {loading && steps.length > 0 && <AiStepProgress steps={steps} />}
-        {loading && streamingText && <AiStreamingText text={streamingText} />}
-        {loading && !streamingText && steps.length === 0 && (
-          <AiStreamingText text={t('思考中...')} />
+        {loading && (
+          <LiveResponseArea>
+            <LiveHeader>
+              <LiveDot />
+              <span>{t('AI 正在思考...')}</span>
+            </LiveHeader>
+            {steps.length > 0 && <AiStepProgress steps={steps} isLive />}
+            {streamingText ? (
+              <AiStreamingText text={streamingText} />
+            ) : (
+              steps.length === 0 && <AiStreamingText text={t('思考中...')} />
+            )}
+          </LiveResponseArea>
         )}
         {clarifyState && onClarifyAnswer && onClarifyDismiss && (
           <AiClarifyOptions

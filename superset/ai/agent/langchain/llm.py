@@ -36,22 +36,30 @@ class GLMChatOpenAI(ChatOpenAI):
     ZhiPu's thinking models (GLM-4, GLM-5.x) return a
     ``reasoning_content`` field alongside standard ``content``.
     The standard ChatOpenAI silently discards it; this subclass
-    captures it and emits it as an additional metadata field.
+    patches the internal ``_convert_chunk_to_generation_chunk`` to preserve it.
     """
 
-    def _stream_chunk_to_message_chunk(
-        self, chunk: dict, **kwargs: Any
-    ) -> AIMessageChunk:
-        message = super()._stream_chunk_to_message_chunk(chunk, **kwargs)
-        # GLM returns reasoning_content at top level or inside choices[].delta
-        reasoning = chunk.get("reasoning_content")
-        if not reasoning:
-            choices = chunk.get("choices", [])
-            if choices:
-                reasoning = choices[0].get("delta", {}).get("reasoning_content")
-        if reasoning:
-            message.additional_kwargs["reasoning_content"] = reasoning
-        return message
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: dict,
+        default_chunk_class: Any,
+        base_generation_info: dict[str, Any] | None,
+    ) -> Any:
+        """Override to inject reasoning_content into additional_kwargs."""
+        choices = chunk.get("choices", [])
+        reasoning = None
+        if choices:
+            delta = choices[0].get("delta", {})
+            reasoning = delta.get("reasoning_content")
+
+        result = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+
+        if result and reasoning and isinstance(result.message, AIMessageChunk):
+            result.message.additional_kwargs["reasoning_content"] = reasoning
+
+        return result
 
 
 def get_langchain_llm() -> ChatOpenAI:

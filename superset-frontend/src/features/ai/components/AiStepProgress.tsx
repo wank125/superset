@@ -23,6 +23,11 @@ import type { AiStep } from '../types';
 
 interface AiStepProgressProps {
   steps: AiStep[];
+  /**
+   * When true, keeps all steps and thinking detail expanded while the agent is
+   * running. Historical steps start collapsed and can be expanded manually.
+   */
+  isLive?: boolean;
 }
 
 const Container = styled.div`
@@ -30,6 +35,11 @@ const Container = styled.div`
   border: 1px solid ${({ theme }) => theme.colorBorderSecondary};
   border-radius: ${({ theme }) => theme.borderRadiusLG}px;
   overflow: hidden;
+`;
+
+/** Remove outer border/margin when rendered inside LiveResponseArea */
+const LiveContainer = styled.div`
+  padding: 4px 0;
 `;
 
 const Header = styled.div`
@@ -83,15 +93,45 @@ const Icon = styled.span<{ $status: AiStep['status'] }>`
   `}
 `;
 
-const Detail = styled.span`
+const Detail = styled.div`
   color: ${({ theme }) => theme.colorTextQuaternary};
   font-family: ${({ theme }) => theme.fontFamilyCode};
   font-size: 11px;
   margin-left: 20px;
+  margin-bottom: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 300px;
+  max-width: 500px;
+`;
+
+const ThinkingToggle = styled.button`
+  background: none;
+  border: none;
+  color: ${({ theme }) => theme.colorPrimary};
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 12px 4px 32px;
+  display: block;
+  font-family: inherit;
+
+  &:hover {
+    text-decoration: underline;
+  }
+`;
+
+const ThinkingBlock = styled.div`
+  margin: 0 12px 4px 32px;
+  padding: 6px 8px;
+  background: ${({ theme }) => theme.colorFillQuaternary};
+  border-radius: ${({ theme }) => theme.borderRadiusSM}px;
+  color: ${({ theme }) => theme.colorTextSecondary};
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 `;
 
 function getIcon(status: AiStep['status']): string {
@@ -107,11 +147,19 @@ function getIcon(status: AiStep['status']): string {
   }
 }
 
-const COLLAPSE_THRESHOLD = 8;
-const VISIBLE_TAIL = 5;
+function isThinkingDetail(detail: string | undefined): detail is string {
+  return !!detail && detail.length > 0;
+}
 
-export function AiStepProgress({ steps }: AiStepProgressProps) {
+function isLongThinking(detail: string | undefined): boolean {
+  return !!detail && detail.length > 40;
+}
+
+export function AiStepProgress({ steps, isLive }: AiStepProgressProps) {
   const [expanded, setExpanded] = useState(false);
+  const [expandedThinking, setExpandedThinking] = useState<Set<string>>(
+    new Set(),
+  );
 
   if (steps.length === 0) {
     return null;
@@ -119,36 +167,66 @@ export function AiStepProgress({ steps }: AiStepProgressProps) {
 
   const doneCount = steps.filter(s => s.status === 'done').length;
   const totalCount = steps.length;
-  const shouldCollapse = !expanded && steps.length > COLLAPSE_THRESHOLD;
-  const visibleSteps = shouldCollapse ? steps.slice(-VISIBLE_TAIL) : steps;
+  const showStepList = isLive || expanded;
+
+  const toggleThinking = (stepId: string) => {
+    setExpandedThinking(prev => {
+      const next = new Set(prev);
+      if (next.has(stepId)) {
+        next.delete(stepId);
+      } else {
+        next.add(stepId);
+      }
+      return next;
+    });
+  };
+
+  const Wrapper = isLive ? LiveContainer : Container;
 
   return (
-    <Container>
-      <Header onClick={() => setExpanded(prev => !prev)}>
-        <span>
-          {t('Steps')} ({doneCount}/{totalCount})
-        </span>
-        <span>{expanded ? '▲' : '▼'}</span>
-      </Header>
-      <StepList>
-        {shouldCollapse && (
-          <StepRow $status="done">
-            <Icon $status="done">…</Icon>
-            <span>
-              {t('%d earlier steps hidden', steps.length - VISIBLE_TAIL)}
-            </span>
-          </StepRow>
-        )}
-        {visibleSteps.map(step => (
-          <div key={step.id}>
-            <StepRow $status={step.status}>
-              <Icon $status={step.status}>{getIcon(step.status)}</Icon>
-              <span>{step.label}</span>
-            </StepRow>
-            {step.detail && <Detail>{step.detail}</Detail>}
-          </div>
-        ))}
-      </StepList>
-    </Container>
+    <Wrapper>
+      {!isLive && (
+        <Header onClick={() => setExpanded(prev => !prev)}>
+          <span>
+            {t('Steps')} ({doneCount}/{totalCount})
+          </span>
+          <span>{expanded ? '▲' : '▼'}</span>
+        </Header>
+      )}
+      {showStepList && (
+        <StepList>
+          {steps.map(step => {
+            const hasThinkingDetail =
+              step.type === 'thinking' && isThinkingDetail(step.detail);
+            const isLong = isLongThinking(step.detail);
+            const thinkingOpen = isLive || expandedThinking.has(step.id);
+
+            return (
+              <div key={step.id}>
+                <StepRow $status={step.status}>
+                  <Icon $status={step.status}>{getIcon(step.status)}</Icon>
+                  <span>{step.label}</span>
+                </StepRow>
+                {step.type === 'tool_call' && step.detail && (
+                  <Detail>{step.detail}</Detail>
+                )}
+                {hasThinkingDetail && !isLong && <Detail>{step.detail}</Detail>}
+                {hasThinkingDetail && isLong && !isLive && (
+                  <ThinkingToggle
+                    type="button"
+                    onClick={() => toggleThinking(step.id)}
+                  >
+                    {thinkingOpen ? '收起思考' : '展开思考'}
+                  </ThinkingToggle>
+                )}
+                {hasThinkingDetail && isLong && thinkingOpen && (
+                  <ThinkingBlock>{step.detail}</ThinkingBlock>
+                )}
+              </div>
+            );
+          })}
+        </StepList>
+      )}
+    </Wrapper>
   );
 }
