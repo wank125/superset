@@ -114,7 +114,7 @@ class OllamaProvider(BaseLLMProvider):
             resp = httpx.post(
                 f"{self._base_url}/api/chat",
                 json=body,
-                timeout=45.0,
+                timeout=60.0,
             )
             resp.raise_for_status()
             return resp.json()

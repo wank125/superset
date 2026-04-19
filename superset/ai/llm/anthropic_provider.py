@@ -153,7 +153,7 @@ class AnthropicProvider(BaseLLMProvider):
                 f"{self._base_url}/v1/messages",
                 headers=self._headers(),
                 json=body,
-                timeout=45.0,
+                timeout=60.0,
             )
             resp.raise_for_status()
             return resp.json()
