@@ -121,7 +121,7 @@ class OpenAIProvider(BaseLLMProvider):
                 f"{self._base_url}/chat/completions",
                 headers=self._headers(),
                 json=body,
-                timeout=30.0,
+                timeout=45.0,
             )
             resp.raise_for_status()
             return resp.json()
