@@ -46,6 +46,76 @@ logger = logging.getLogger(__name__)
 _MAX_SQL_ATTEMPTS = 3
 _MAX_REPAIR_ATTEMPTS = 3
 
+_GROUP_BY_ERROR_PATTERNS = (
+    "not a GROUP BY expression",
+    "must appear in the GROUP BY clause",
+    "grouping error",
+    "is not contained in the aggregate function",
+    "is not contained in either an aggregate function",
+    "non-aggregated column",
+)
+
+
+def _try_fix_group_by_error(sql: str, error_msg: str) -> str | None:
+    """Attempt a deterministic fix for GROUP BY aggregation errors.
+
+    If the error indicates a bare column in SELECT needs an aggregate,
+    find columns in SELECT that are NOT in GROUP BY and NOT already
+    aggregated, then wrap them in SUM().
+    """
+    error_lower = error_msg.lower()
+    if not any(p.lower() in error_lower for p in _GROUP_BY_ERROR_PATTERNS):
+        return None
+
+    gb_match = re.search(
+        r"\bGROUP\s+BY\s+(.+?)(?:\s+ORDER|\s+HAVING|\s+LIMIT|\s*$)",
+        sql, re.IGNORECASE | re.DOTALL,
+    )
+    select_match = re.search(
+        r"SELECT\s+(.+?)\s+FROM", sql, re.IGNORECASE | re.DOTALL,
+    )
+    if not gb_match or not select_match:
+        return None
+
+    gb_cols = [c.strip().lower() for c in gb_match.group(1).split(",")]
+    select_part = select_match.group(1)
+    select_tokens = _split_top_level(select_part, ",")
+    fixed_tokens: list[str] = []
+    modified = False
+
+    for token in select_tokens:
+        stripped = token.strip()
+        bare = re.split(r"\s+AS\s+", stripped, flags=re.IGNORECASE)[0].strip()
+        # Already aggregated
+        if "(" in bare:
+            fixed_tokens.append(stripped)
+            continue
+        if bare == "*":
+            fixed_tokens.append(stripped)
+            continue
+        # Column is in GROUP BY — keep as-is
+        if bare.lower() in gb_cols:
+            fixed_tokens.append(stripped)
+            continue
+        # Column NOT in GROUP BY and NOT aggregated → wrap in SUM()
+        modified = True
+        alias_match = re.search(r"\s+AS\s+(\S+)$", stripped, re.IGNORECASE)
+        alias = alias_match.group(1) if alias_match else bare
+        fixed_tokens.append(f"SUM({bare}) AS {alias}")
+
+    if not modified:
+        return None
+
+    new_select = ", ".join(fixed_tokens)
+    fixed_sql = re.sub(
+        r"SELECT\s+.+?\s+FROM",
+        f"SELECT {new_select} FROM",
+        sql,
+        count=1,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return fixed_sql
+
 
 def _publish_retry(
     state: SingleChartState,
@@ -152,6 +222,11 @@ Rules:
 - Do not use saved metric names directly; convert them to SQL expressions
 - When business metrics are defined, prefer their SQL expressions over guessing
 - If the chart title mentions a dimension, include it in GROUP BY and dimensions[]
+- **CRITICAL GROUP BY rule**: when GROUP BY is present, EVERY column in SELECT must
+  either appear in GROUP BY or be wrapped in an aggregate function (SUM, COUNT, AVG,
+  MAX, MIN). NEVER select a bare metric column alongside GROUP BY.
+  WRONG: SELECT name, num FROM t GROUP BY name
+  RIGHT: SELECT name, SUM(num) AS num FROM t GROUP BY name
 - For trend charts: include the time column in SELECT and GROUP BY;
   use DATE_TRUNC('month', col) or similar for time granularity
 - For composition: include 1 low-cardinality dimension in GROUP BY
@@ -402,7 +477,8 @@ def _split_top_level(text: str, delimiter: str) -> list[str]:
 
 
 def _validate_sql_static(sql: str, known_cols: set[str]) -> list[str]:
-    """Static checks: no DDL/DML, LIMIT exists, column names are valid."""
+    """Static checks: no DDL/DML, LIMIT exists, column names are valid,
+    and GROUP BY columns are properly aggregated."""
     issues: list[str] = []
     sql_upper = sql.upper().strip()
 
@@ -438,6 +514,32 @@ def _validate_sql_static(sql: str, known_cols: set[str]) -> list[str]:
             if part and part.lower() not in {c.lower() for c in known_cols}:
                 issues.append(f"Unknown column '{part}' in SELECT")
 
+    # GROUP BY aggregation check: when GROUP BY is present, every bare
+    # column in SELECT must also appear in GROUP BY. Columns not in
+    # GROUP BY must be wrapped in aggregate functions.
+    gb_match = re.search(r"\bGROUP\s+BY\s+(.+?)(?:\s+ORDER|\s+HAVING|\s+LIMIT|\s*$)",
+                         sql, re.IGNORECASE | re.DOTALL)
+    if gb_match and select_match:
+        gb_raw = gb_match.group(1).strip()
+        gb_cols = {c.strip().lower() for c in gb_raw.split(",")}
+        select_part = select_match.group(1)
+        select_tokens = _split_top_level(select_part, ",")
+        for part in select_tokens:
+            part = part.strip()
+            # Strip trailing AS alias
+            bare = re.split(r"\s+AS\s+", part, flags=re.IGNORECASE)[0].strip()
+            # Skip aggregate expressions
+            if "(" in bare:
+                continue
+            if bare == "*":
+                continue
+            # bare is a column name — it must be in GROUP BY
+            if bare and bare.lower() not in gb_cols:
+                issues.append(
+                    f"Column '{bare}' is in SELECT but not in GROUP BY and "
+                    f"has no aggregate function. Wrap it in SUM/AVG/COUNT/etc."
+                )
+
     return issues
 
 
@@ -450,9 +552,25 @@ def execute_query(
     from superset.ai.tools.execute_sql import ExecuteSqlTool
 
     tool = ExecuteSqlTool(database_id=state["database_id"])
-    result_str = tool.run({"sql": state["sql"]})
+    sql = state["sql"]
+    result_str = tool.run({"sql": sql})
 
+    # Deterministic GROUP BY fix: if the error is a grouping/aggregation
+    # error, try to auto-fix before falling back to LLM retry.
     if result_str.startswith("Error"):
+        fixed_sql = _try_fix_group_by_error(sql, result_str)
+        if fixed_sql:
+            logger.info("execute_query: deterministic GROUP BY fix applied")
+            result_str = tool.run({"sql": fixed_sql})
+            if not result_str.startswith("Error"):
+                return Command(
+                    update={
+                        "sql": fixed_sql,
+                        "query_result_raw": result_str,
+                        "last_error": None,
+                    },
+                    goto="analyze_result",
+                )
         if state.get("sql_attempts", 0) >= _MAX_SQL_ATTEMPTS:
             return Command(
                 update={

@@ -57,8 +57,6 @@ import {
   getNumberFormatter,
   getExtensionsRegistry,
   ErrorTypeEnum,
-  FeatureFlag,
-  isFeatureEnabled,
 } from '@superset-ui/core';
 import {
   ISaveableDatasource,
@@ -574,10 +572,6 @@ const ResultSet = ({
 
   if (query.state === QueryState.Failed) {
     const errors = [...(query.extra?.errors || []), ...(query.errors || [])];
-    const errorMessages = errors
-      .map(e => e.message || e)
-      .filter(Boolean)
-      .join('; ');
 
     return (
       <ResultlessStyles>
