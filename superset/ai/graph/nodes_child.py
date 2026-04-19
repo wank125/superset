@@ -193,84 +193,96 @@ def _publish_chart_preview(
 # ── Prompts ─────────────────────────────────────────────────────────
 
 PLAN_QUERY_PROMPT = """\
-Generate a SQL query for the given chart goal. Return ONLY valid JSON.
-
-Chart goal: {analysis_intent} — "{slice_name}"
-{sql_hint}
-Table: {table_name}
-Columns:
+Generate SQL for: {analysis_intent} — "{slice_name}"
+{sql_hint}Table: {table_name}
   time: {datetime_cols}
-  dimensions: {dimension_cols}
+  dims: {dimension_cols}
   metrics: {metric_cols}
-  saved_metrics: {saved_metrics}
-Column business descriptions (use these to map user intent to column names):
-{column_descriptions_block}
-Business metric definitions (PREFER THESE when user mentions business KPIs):
-{business_metrics_block}
+  saved_metrics: {saved_metrics_inline}
+{column_hint}
 {error_hint}
-
-Output:
-{{
-  "sql": "<complete SELECT statement>",
-  "metric_expr": "<main aggregate expression, e.g. SUM(col)>",
-  "dimensions": ["<groupby column names>"]
-}}
-
+Output: {{"sql": "<SELECT>", "metric_expr": "<aggregate>", "dimensions": ["<groupby>"]}}
 Rules:
-- Write a complete, executable SELECT query in the "sql" field
-- Only use column names from the lists above
-- Do not use saved metric names directly; convert them to SQL expressions
-- When business metrics are defined, prefer their SQL expressions over guessing
-- If the chart title mentions a dimension, include it in GROUP BY and dimensions[]
-- **CRITICAL GROUP BY rule**: when GROUP BY is present, EVERY column in SELECT must
-  either appear in GROUP BY or be wrapped in an aggregate function (SUM, COUNT, AVG,
-  MAX, MIN). NEVER select a bare metric column alongside GROUP BY.
-  WRONG: SELECT name, num FROM t GROUP BY name
-  RIGHT: SELECT name, SUM(num) AS num FROM t GROUP BY name
-- For trend charts: include the time column in SELECT and GROUP BY;
-  use DATE_TRUNC('month', col) or similar for time granularity
-- For composition: include 1 low-cardinality dimension in GROUP BY
-- Always include ORDER BY and LIMIT (max 500)
-- Quote the table name with double quotes ONLY if it contains spaces or special characters
-- Do NOT quote regular column names — use them bare (e.g. developer_type, NOT "developer_type")
-- metric_expr: the main aggregate expression (e.g. SUM(num), COUNT(*))
-- dimensions: list the GROUP BY column names (without aggregate functions)
-- Do not include semicolons
+- Use EXACT column names from Columns line above (e.g. registered_capital not capital)
+- GROUP BY every non-aggregated SELECT column
+- ORDER BY + LIMIT 500, no semicolons
+- Use bare column names, no quotes unless special chars
+- For trend charts use DATE_TRUNC on time column
 """
 
+# Fallback prompt — ultra-compact, used when the main prompt times out.
+PLAN_QUERY_PROMPT_SIMPLE = """\
+Write SQL for: {analysis_intent} — "{slice_name}"
+Table: {table_name}
+  dims: {dimension_cols}
+  metrics: {metric_cols}
+  time: {datetime_cols}
+{column_hint}
+{error_hint}
+Output: {{"sql": "<SELECT>", "metric_expr": "<aggregate>", "dimensions": ["<groupby>"]}}
+Rules: GROUP BY non-aggregated cols. ORDER BY + LIMIT 500. No semicolons.
+"""
+
+
+def _build_column_hint(
+    slice_name: str,
+    col_descriptions: dict[str, str],
+    col_verbose_names: dict[str, str],
+    max_hints: int = 20,
+) -> str:
+    """Build compact column reference with Chinese names for LLM column matching.
+
+    Always includes ALL columns with verbose_name or description so the LLM
+    can definitively map Chinese terms (e.g. "注册资本") to English column
+    names (e.g. "registered_capital").
+    """
+    # Merge: verbose_name takes priority over description
+    merged: dict[str, str] = {}
+    for col, desc in col_descriptions.items():
+        merged[col] = desc
+    for col, vname in col_verbose_names.items():
+        merged[col] = vname  # verbose_name wins
+
+    if not merged:
+        return ""
+
+    parts = [f"{col}→{desc}" for col, desc in merged.items()]
+    if len(parts) > max_hints:
+        parts = parts[:max_hints]
+
+    return "Columns: " + ", ".join(parts)
+
+
+def _annotate_cols(
+    cols: list[str], verbose_names: dict[str, str]
+) -> str:
+    """Annotate column list with Chinese verbose names: col_name(中文名)."""
+    parts: list[str] = []
+    for col in cols:
+        vn = verbose_names.get(col)
+        parts.append(f"{col}({vn})" if vn else col)
+    return ", ".join(parts)
+
+
 SELECT_CHART_PROMPT = """\
-Choose the best chart type. Return ONLY valid JSON.
-
-Chart goal: {analysis_intent} — "{slice_name}"
-User preferred: {preferred_viz}
-
-Query Plan (MUST map these closely to chart parameters):
-  - Planned Metric(s): {planned_metric}
-  - Planned Groupby: {planned_dimensions}
-
-Data suitability:
+Pick chart type for: {analysis_intent} — "{slice_name}"
+Preferred: {preferred_viz}
+Metric: {planned_metric}, Groupby: {planned_dimensions}
+Data: time={datetime_col}, num={numeric_cols}, dims={low_card_cols}
 {suitability_flags}
-Columns: time={datetime_col}, numeric={numeric_cols}, low-cardinality={low_card_cols}
+Types: {chart_type_reference}
 
-Chart types reference:
-{chart_type_reference}
+Output: {{"viz_type": "<type>", "slice_name": "<title>", "semantic_params": {{"time_field": null, "metric": "<use metric>", "metrics": ["<metric>"], "groupby": <groupby array>, "x_field": "<x or null>"}}, "rationale": "<why>"}}
+Rule: Prefer user's choice if compatible.
+"""
 
-Output:
-{{
-  "viz_type": "<chosen>",
-  "slice_name": "<chart title>",
-  "semantic_params": {{
-    "time_field": "<or null>",
-    "metric": "<use Planned Metric here>",
-    "metrics": ["<use Planned Metric here if plural>"],
-    "groupby": <use Planned Groupby array here directly>,
-    "x_field": "<col for bar x-axis or null>"
-  }},
-  "rationale": "<one sentence>"
-}}
+# Fallback: skip LLM, use preferred_viz directly
+SELECT_CHART_PROMPT_SIMPLE = """\
+Pick chart for: {analysis_intent} — "{slice_name}"
+Preferred: {preferred_viz}
+Metric: {planned_metric}, Groupby: {planned_dimensions}
 
-Rules:
-- If User preferred is set and compatible with the data, use that viz_type
+Output: {{"viz_type": "{preferred_viz}", "slice_name": "<title>", "semantic_params": {{"time_field": null, "metric": "<metric>", "metrics": ["<metric>"], "groupby": <groupby>, "x_field": "<x or null>"}}, "rationale": "<why>"}}
 """
 
 REPAIR_PROMPT = """\
@@ -303,50 +315,67 @@ def plan_query(
 
     sql_hint = intent.get("sql_hint", "")
 
-    # Phase 12: build column descriptions block for the prompt
+    # Build column reference with Chinese verbose names for accurate matching
     col_desc = summary.get("column_descriptions", {})
     col_verbose = summary.get("column_verbose_names", {})
-    # Merge: verbose_name as base, description values take precedence
-    all_desc = {**col_verbose, **col_desc}
-    col_desc_lines = "\n".join(
-        f"  {col}: {desc}" for col, desc in list(all_desc.items())[:15]
-    ) or "  (no business descriptions available)"
+    column_hint = _build_column_hint(intent["slice_name"], col_desc, col_verbose)
 
-    # Phase 13: build business metrics block
-    biz_metrics = summary.get("business_metrics", {})
-    biz_lines = "\n".join(
-        f"  {name}: {m.get('description', '')}\n    SQL: {m.get('sql', '')}"
-        for name, m in list(biz_metrics.items())[:8]
-    ) or "  (no business metrics defined for this table)"
+    # Annotate dims/metrics with verbose names for clearer LLM mapping
+    dim_cols = _annotate_cols(summary["dimension_cols"], col_verbose)
+    met_cols = _annotate_cols(summary["metric_cols"], col_verbose)
+
+    # Inline saved metric expressions (compact format)
+    saved_expr = summary.get("saved_metric_expressions", {})
+    saved_inline = (
+        "; ".join(f"{k}={v}" for k, v in list(saved_expr.items())[:3])
+        or "none"
+    )
 
     prompt = PLAN_QUERY_PROMPT.format(
         analysis_intent=intent["analysis_intent"],
         slice_name=intent["slice_name"],
-        sql_hint=f"Hint: {sql_hint}" if sql_hint else "",
+        sql_hint=f"Hint: {sql_hint}\n" if sql_hint else "",
         table_name=summary["table_name"],
         datetime_cols=summary["datetime_cols"],
-        dimension_cols=summary["dimension_cols"],
-        metric_cols=summary["metric_cols"],
-        saved_metrics=summary["saved_metrics"],
-        column_descriptions_block=col_desc_lines,
-        business_metrics_block=biz_lines,
+        dimension_cols=dim_cols,
+        metric_cols=met_cols,
+        saved_metrics_inline=saved_inline,
+        column_hint=column_hint,
         error_hint=error_hint,
     )
+    logger.info("plan_query prompt length: %d chars", len(prompt))
+
     try:
         sql_plan = llm_call_json(prompt)
     except ValueError as exc:
-        logger.warning("plan_query LLM error: %s", exc)
-        return Command(
-            update={
-                "last_error": {
-                    "node": "plan_query",
-                    "type": "llm_format_error",
-                    "message": str(exc),
-                    "recoverable": False,
-                },
-            },
-            goto="__end__",
+        logger.warning("plan_query prompt failed: %s — retrying compact", exc)
+        # Retry with ultra-compact prompt as fallback
+        simple_prompt = PLAN_QUERY_PROMPT_SIMPLE.format(
+            analysis_intent=intent["analysis_intent"],
+            slice_name=intent["slice_name"],
+            table_name=summary["table_name"],
+            datetime_cols=summary["datetime_cols"],
+            dimension_cols=dim_cols,
+            metric_cols=met_cols,
+            column_hint=column_hint,
+            error_hint=error_hint,
         )
+        logger.info("plan_query compact prompt length: %d chars", len(simple_prompt))
+        try:
+            sql_plan = llm_call_json(simple_prompt)
+        except ValueError as exc2:
+            logger.warning("plan_query compact prompt also failed: %s", exc2)
+            return Command(
+                update={
+                    "last_error": {
+                        "node": "plan_query",
+                        "type": "llm_format_error",
+                        "message": str(exc2),
+                        "recoverable": False,
+                    },
+                },
+                goto="__end__",
+            )
     return Command(update={"sql_plan": sql_plan}, goto="validate_sql")
 
 
@@ -825,11 +854,17 @@ def select_chart(
         planned_metric = ", ".join(planned_metric)
     planned_dimensions = json.dumps(sql_plan.get("dimensions", []))
 
-    chart_ref = get_chart_registry().format_for_prompt()
+    # Use compact chart type reference filtered by intent
+    chart_ref = get_chart_registry().format_for_prompt_compact(
+        intent=intent.get("analysis_intent"),
+        preferred=intent.get("preferred_viz"),
+    )
+    preferred_viz = intent.get("preferred_viz") or "auto"
+
     prompt = SELECT_CHART_PROMPT.format(
         analysis_intent=intent["analysis_intent"],
         slice_name=intent["slice_name"],
-        preferred_viz=intent.get("preferred_viz", "auto"),
+        preferred_viz=preferred_viz,
         planned_metric=planned_metric,
         planned_dimensions=planned_dimensions,
         suitability_flags=flag_str,
@@ -838,22 +873,30 @@ def select_chart(
         low_card_cols=result_summary["low_cardinality_cols"][:4],
         chart_type_reference=chart_ref,
     )
+    logger.info("select_chart prompt length: %d chars", len(prompt))
+
     try:
         chart_plan = llm_call_json(prompt)
         logger.info("select_chart chart_plan: %s", str(chart_plan)[:300])
     except ValueError as exc:
-        logger.warning("select_chart LLM error: %s", exc)
-        return Command(
-            update={
-                "last_error": {
-                    "node": "select_chart",
-                    "type": "llm_format_error",
-                    "message": str(exc),
-                    "recoverable": False,
-                },
+        logger.warning("select_chart LLM failed: %s — building default plan", exc)
+        # Build a default chart plan from sql_plan without LLM
+        from superset.ai.graph.nodes_parent import _normalize_preferred_viz
+
+        fallback_viz = _normalize_preferred_viz(preferred_viz) if preferred_viz != "auto" else "table"
+        chart_plan = {
+            "viz_type": fallback_viz,
+            "slice_name": intent["slice_name"],
+            "semantic_params": {
+                "time_field": result_summary.get("datetime_col"),
+                "metric": planned_metric,
+                "metrics": [planned_metric],
+                "groupby": sql_plan.get("dimensions", []),
+                "x_field": sql_plan.get("dimensions", [""])[0] or None,
             },
-            goto="__end__",
-        )
+            "rationale": f"Fallback: user preferred {preferred_viz}",
+        }
+        logger.info("select_chart fallback plan: %s", str(chart_plan)[:300])
     preferred_viz = intent.get("preferred_viz")
     # Phase 19b: determine suggested_width from chart type registry
     from superset.ai.graph.nodes_parent import _normalize_preferred_viz

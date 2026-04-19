@@ -40,11 +40,49 @@ class ChartTypeRegistry:
 
     def format_for_prompt(self) -> str:
         """Format all chart types as a compact markdown reference table."""
+        return self._format_subset(self._types.values())
+
+    def format_for_prompt_compact(
+        self, intent: str | None = None, preferred: str | None = None
+    ) -> str:
+        """Format only the most relevant chart types for the given intent.
+
+        Returns a compact comma-separated list instead of a full table.
+        """
+        # Intent → category mapping
+        intent_map = {
+            "trend": "timeseries",
+            "comparison": {"timeseries", "categorical"},
+            "composition": {"categorical", "composition"},
+            "distribution": {"categorical", "distribution"},
+            "kpi": "kpi",
+        }
+        categories = intent_map.get(intent) if intent else None
+        if isinstance(categories, str):
+            categories = {categories}
+        if categories is None:
+            categories = {"timeseries", "categorical", "composition", "kpi"}
+
+        # Filter to matching types
+        relevant = [
+            d for d in self._types.values()
+            if d.category in categories
+        ]
+        if not relevant:
+            relevant = list(self._types.values())
+
+        lines: list[str] = []
+        for desc in relevant:
+            best = "、".join(desc.best_for[:2])
+            lines.append(f"{desc.viz_type}({desc.display_name}:{best})")
+        return ", ".join(lines)
+
+    def _format_subset(self, descs: Any) -> str:
         lines = [
             "| viz_type | 名称 | 分类 | 适用场景 | 核心参数 |",
             "|---|---|---|---|---|",
         ]
-        for desc in self._types.values():
+        for desc in descs:
             best = "、".join(desc.best_for[:3])
             key_params = "、".join(
                 p.name for p in desc.params if p.required

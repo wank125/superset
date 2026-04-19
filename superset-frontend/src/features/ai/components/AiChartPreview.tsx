@@ -105,22 +105,24 @@ export function AiChartPreview({
           <Tag color="warning" style={{ fontSize: 11 }}>
             {t('预览')}
           </Tag>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <Tag
-              color={viewMode === 'chart' ? 'blue' : undefined}
-              style={toggleStyle(viewMode === 'chart')}
-              onClick={() => setViewMode('chart')}
-            >
-              {chartLabel}
-            </Tag>
-            <Tag
-              color={viewMode === 'table' ? 'blue' : undefined}
-              style={toggleStyle(viewMode === 'table')}
-              onClick={() => setViewMode('table')}
-            >
-              {t('表格')}
-            </Tag>
-          </span>
+          {preview.vizType !== 'table' && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <Tag
+                color={viewMode === 'chart' ? 'blue' : undefined}
+                style={toggleStyle(viewMode === 'chart')}
+                onClick={() => setViewMode('chart')}
+              >
+                {chartLabel}
+              </Tag>
+              <Tag
+                color={viewMode === 'table' ? 'blue' : undefined}
+                style={toggleStyle(viewMode === 'table')}
+                onClick={() => setViewMode('table')}
+              >
+                {t('表格')}
+              </Tag>
+            </span>
+          )}
         </span>
       }
       style={{ marginBottom: 12 }}

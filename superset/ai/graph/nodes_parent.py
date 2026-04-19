@@ -35,6 +35,7 @@ Nodes:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -337,6 +338,26 @@ Rules:
 
 # ── Node P-1: select_database [Code] ─────────────────────────────────
 
+_DB_NAME_PATTERNS = [
+    re.compile(r"使用\s*([\w.-]+)\s*数据库", re.IGNORECASE),
+    re.compile(r"使用数据库\s+([\w.-]+)", re.IGNORECASE),
+    re.compile(r"用\s*([\w.-]+)\s*数据库", re.IGNORECASE),
+    re.compile(r"database\s+([\w.-]+)", re.IGNORECASE),
+    re.compile(r"using\s+([\w.-]+)", re.IGNORECASE),
+]
+
+
+def _extract_db_name(request_text: str, db_names: list[str]) -> str | None:
+    """Try to extract a database name from user's natural language request."""
+    for pat in _DB_NAME_PATTERNS:
+        m = pat.search(request_text)
+        if m:
+            candidate = m.group(1).strip("，。、,.")
+            for name in db_names:
+                if candidate.lower() == name.lower():
+                    return name
+    return None
+
 
 def select_database(
     state: DashboardState,
@@ -353,13 +374,25 @@ def select_database(
     if state.get("database_id"):
         return Command(goto="check_schema")
 
-    # 2. User answered clarify: parse prefix
-    prefix = "使用数据库 "
-    request_text = state.get("request", "")
-    if request_text.startswith(prefix):
-        db_name = request_text[len(prefix):].strip()
-        from superset.daos.database import DatabaseDAO
+    # 2. Query accessible databases
+    from superset.daos.database import DatabaseDAO
 
+    request_text = state.get("request", "")
+    databases = DatabaseDAO.find_all()
+    db_names = [db.database_name for db in databases]
+
+    # 3. Try to extract DB name from natural language
+    db_name = _extract_db_name(request_text, db_names)
+    # 3b. If current message is a clarify answer (e.g. "使用 Schema xxx"),
+    #     look up the previously mentioned database from conversation history.
+    if not db_name:
+        history = state.get("conversation_history") or []
+        for entry in reversed(history[-10:]):
+            if entry.get("role") == "user" and entry.get("content"):
+                db_name = _extract_db_name(entry["content"], db_names)
+                if db_name:
+                    break
+    if db_name:
         database = DatabaseDAO.find_one_or_none(database_name=db_name)
         if database:
             return Command(
@@ -367,11 +400,6 @@ def select_database(
                 goto="check_schema",
             )
         logger.warning("select_database: DB '%s' not found, re-asking", db_name)
-
-    # 3. Query accessible databases
-    from superset.daos.database import DatabaseDAO
-
-    databases = DatabaseDAO.find_all()
 
     # 4. No databases → error
     if not databases:
@@ -403,7 +431,7 @@ def select_database(
             "clarify_question": "请选择要分析的数据库：",
             "clarify_type": "database_selection",
             "clarify_options": options,
-            "answer_prefix": prefix,
+            "answer_prefix": "使用数据库 {value}",
         },
         goto="clarify_user",
     )
@@ -423,13 +451,19 @@ def check_schema(
         return Command(goto="classify_intent")
 
     # Has the user selected a schema in this turn?
-    # Based on answer_prefix, e.g., "分析的 Schema: {value}" or similar
     request_text = state.get("request", "")
     prefix = "使用 Schema "
     if request_text.startswith(prefix):
         selected_schema = request_text[len(prefix):].strip()
         return Command(
             update={"schema_name": selected_schema},
+            goto="classify_intent",
+        )
+    # Also try extracting schema from natural language like "使用xxx Schema"
+    schema_match = re.search(r"(?:使用|用)\s*(\S+)\s*Schema", request_text, re.IGNORECASE)
+    if schema_match:
+        return Command(
+            update={"schema_name": schema_match.group(1).strip("，。、,.")},
             goto="classify_intent",
         )
 
@@ -475,7 +509,7 @@ def check_schema(
             "clarify_question": "发现该数据库结构包含多个业务域（Schema），请问您需要基于哪一个进行数据分析？",
             "clarify_type": "schema_selection",
             "clarify_options": options,
-            "answer_prefix": prefix,
+            "answer_prefix": "使用 Schema {value}",
         },
         goto="clarify_user",
     )

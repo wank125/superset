@@ -1355,3 +1355,57 @@ class TestCountStarMetric:
         assert result["expressionType"] == "SIMPLE"
         assert result["aggregate"] == "SUM"
         assert result["column"]["column_name"] == "num"
+
+
+# ── _extract_db_name tests ──────────────────────────────────────────
+
+
+class TestExtractDbName:
+    """Tests for _extract_db_name natural language extraction."""
+
+    DB_NAMES = ["examples", "sc-demo-dataset", "sc-postgresql", "MyDB"]
+
+    def test_chinese_use_db_prefix(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("使用 sc-demo-dataset 数据库，查询 company 表", self.DB_NAMES) == "sc-demo-dataset"
+
+    def test_chinese_use_db_suffix(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("使用数据库 sc-postgresql", self.DB_NAMES) == "sc-postgresql"
+
+    def test_chinese_yong_prefix(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("用sc-demo-dataset数据库查 expert 表", self.DB_NAMES) == "sc-demo-dataset"
+
+    def test_english_database_keyword(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("query database examples for births", self.DB_NAMES) == "examples"
+
+    def test_english_using_keyword(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("using MyDB analyze sales", self.DB_NAMES) == "MyDB"
+
+    def test_case_insensitive(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("使用 mydb 数据库查询", self.DB_NAMES) == "MyDB"
+
+    def test_no_match(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("查询 company 表中数据", self.DB_NAMES) is None
+
+    def test_trailing_punctuation(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("使用数据库 sc-demo-dataset，查询", self.DB_NAMES) == "sc-demo-dataset"
+
+    def test_db_not_in_list(self):
+        from superset.ai.graph.nodes_parent import _extract_db_name
+
+        assert _extract_db_name("使用 nonexistent 数据库", self.DB_NAMES) is None

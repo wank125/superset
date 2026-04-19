@@ -679,9 +679,11 @@ export function useAiChat(
   const answerClarify = useCallback(
     (value: string) => {
       if (!clarifyState) return;
-      const message = clarifyState.answerPrefix
+      const message = clarifyState.answerPrefix?.includes('{value}')
         ? clarifyState.answerPrefix.replace('{value}', value)
-        : value;
+        : clarifyState.answerPrefix
+          ? `${clarifyState.answerPrefix}${value}`
+          : value;
       setClarifyState(null);
       if (loadingRef.current) {
         // Graph still running — queue answer; finalize() will send it
