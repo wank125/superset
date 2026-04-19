@@ -840,6 +840,7 @@ def select_chart(
     )
     try:
         chart_plan = llm_call_json(prompt)
+        logger.info("select_chart chart_plan: %s", str(chart_plan)[:300])
     except ValueError as exc:
         logger.warning("select_chart LLM error: %s", exc)
         return Command(
@@ -876,6 +877,7 @@ def select_chart(
 def normalize_chart_params(
     state: SingleChartState,
 ) -> Command[Literal["create_chart", "repair_chart_params", "__end__"]]:
+    logger.info("normalize_chart_params: chart_plan=%s", str(state.get("chart_plan", {}))[:200])
     if state.get("repair_attempts", 0) >= _MAX_REPAIR_ATTEMPTS:
         return Command(
             update={
@@ -998,6 +1000,7 @@ def create_chart(
     from superset.ai.tools.create_chart import CreateChartTool
 
     chart_plan = state["chart_plan"]
+    logger.info("create_chart: plan=%s form_data=%s", str(chart_plan)[:200], str(state.get("chart_form_data", ""))[:200])
     if not chart_plan:
         return Command(
             update={
@@ -1016,6 +1019,7 @@ def create_chart(
 
     # Idempotency: skip if same chart was created within 10 minutes
     existing = _find_recent_chart(slice_name, viz_type, datasource_id)
+    logger.info("create_chart: looking for existing chart name=%s viz=%s ds=%s found=%s", slice_name, viz_type, datasource_id, existing)
     if existing:
         return Command(
             update={

@@ -153,12 +153,12 @@ class AnthropicProvider(BaseLLMProvider):
                 f"{self._base_url}/v1/messages",
                 headers=self._headers(),
                 json=body,
-                timeout=60.0,
+                timeout=120.0,
             )
             resp.raise_for_status()
             return resp.json()
 
-        data = retry_call(_call, exception=httpx.HTTPError, max_tries=2, interval=2)
+        data = retry_call(_call, exception=httpx.HTTPError, max_tries=3, interval=3)
         content_blocks = data.get("content", [])
         text_parts = [b["text"] for b in content_blocks if b.get("type") == "text"]
         tool_calls = self._parse_tool_calls(content_blocks)

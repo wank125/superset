@@ -48,11 +48,18 @@ _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 
 def _get_llm_response(prompt: str) -> str:
     """Call the configured LLM provider with a single prompt and return text."""
+    import time
+
     from superset.ai.llm.registry import get_provider
 
     provider = get_provider()
+    prompt_preview = prompt[:120].replace("\n", " ")
+    logger.info("LLM call starting (prompt preview: %s...)", prompt_preview)
+    t0 = time.monotonic()
     messages = [LLMMessage(role="user", content=prompt)]
     response = provider.chat(messages)
+    elapsed = time.monotonic() - t0
+    logger.info("LLM call done in %.1fs", elapsed)
     return response.content or ""
 
 

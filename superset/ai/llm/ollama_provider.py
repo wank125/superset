@@ -114,12 +114,12 @@ class OllamaProvider(BaseLLMProvider):
             resp = httpx.post(
                 f"{self._base_url}/api/chat",
                 json=body,
-                timeout=60.0,
+                timeout=120.0,
             )
             resp.raise_for_status()
             return resp.json()
 
-        data = retry_call(_call, exception=httpx.HTTPError, max_tries=2, interval=2)
+        data = retry_call(_call, exception=httpx.HTTPError, max_tries=3, interval=3)
         message = data.get("message", {})
         tool_calls = None
         if message.get("tool_calls"):

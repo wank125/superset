@@ -121,12 +121,12 @@ class OpenAIProvider(BaseLLMProvider):
                 f"{self._base_url}/chat/completions",
                 headers=self._headers(),
                 json=body,
-                timeout=60.0,
+                timeout=120.0,
             )
             resp.raise_for_status()
             return resp.json()
 
-        data = retry_call(_call, exception=httpx.HTTPError, max_tries=2, interval=2)
+        data = retry_call(_call, exception=httpx.HTTPError, max_tries=3, interval=3)
         choice = data["choices"][0]
         message = choice["message"]
         tool_calls = None
